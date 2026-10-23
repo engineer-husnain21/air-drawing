@@ -1,0 +1,22 @@
+# Environment
+.env
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Large data and model files
+data/raw/
+models/*.task
+models/*.pt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
