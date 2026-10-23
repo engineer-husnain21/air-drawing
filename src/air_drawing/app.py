@@ -1,43 +1,71 @@
-"""Main loop: webcam -> hand tracking -> gestures -> canvas."""
+"""Main loop: webcam -> hand tracking -> gestures -> canvas -> CNN prediction."""
 
 import logging
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 
 from air_drawing import config
 from air_drawing.canvas import Canvas
+from air_drawing.classifier import Classifier, Prediction
 from air_drawing.gestures import Gesture, GestureDebouncer, classify_gesture
 from air_drawing.hand_tracker import HandResult, HandTracker, draw_landmarks
+from air_drawing.preprocess import preprocess_strokes
 
 logger = logging.getLogger(__name__)
 
+MSG_NOTHING_DRAWN = "Nothing drawn"
+MSG_NO_MODEL = "CNN model not loaded (run scripts/train.py)"
+SOURCE_CNN = "CNN"
 CONTROLS_HINT = (
     "Index: draw | Index+Middle: pen up | Open hand: clear | Fist: predict | "
     f"Keys: {config.KEY_CLEAR} clear, {config.KEY_PREDICT} predict, {config.KEY_QUIT} quit"
 )
 
 
-class AirDrawingApp:
-    """Ties tracking, gestures and drawing together."""
+@dataclass
+class PredictionState:
+    """What the HUD shows about the last prediction."""
 
-    def __init__(self, tracker: HandTracker) -> None:
-        """Store collaborators."""
+    cnn: list[Prediction] = field(default_factory=list)
+    source: str | None = None
+    message: str | None = None
+
+
+class AirDrawingApp:
+    """Ties tracking, gestures, drawing and recognition together."""
+
+    def __init__(self, tracker: HandTracker, classifier: Classifier | None) -> None:
+        """Store collaborators; classifier may be None if no weights are available."""
         self._tracker = tracker
+        self._classifier = classifier
         self.canvas = Canvas()
         self._debouncer = GestureDebouncer()
+        self.state = PredictionState()
 
     # --- actions --------------------------------------------------------------
 
     def clear(self) -> None:
-        """Erase the drawing."""
+        """Erase the drawing and the last prediction."""
         self.canvas.clear()
+        self.state = PredictionState()
         logger.info("Canvas cleared")
 
     def predict(self) -> None:
-        """End the current stroke (recognition is added in a later phase)."""
+        """Classify the drawing with the CNN."""
         self.canvas.pen_up()
-        logger.info("Predict requested (%d strokes)", len(self.canvas.strokes))
+        tensor = preprocess_strokes(self.canvas.strokes)
+        if tensor is None:
+            self.state = PredictionState(message=MSG_NOTHING_DRAWN)
+            return
+        if self._classifier is None:
+            self.state = PredictionState(message=MSG_NO_MODEL)
+            return
+        predictions = self._classifier.predict(tensor)
+        self.state = PredictionState(cnn=predictions, source=SOURCE_CNN)
+        top = predictions[0]
+        logger.info("CNN: %s (%.0f%%)", top.label, top.confidence * config.PERCENT)
 
     def handle_key(self, key: int) -> bool:
         """React to a key press; return False when the app should quit."""
@@ -76,7 +104,7 @@ class AirDrawingApp:
         self.canvas.render(frame)
         if hand is not None:
             draw_landmarks(frame, hand)
-        draw_hud(frame, gesture)
+        draw_hud(frame, gesture, self.state)
         return frame
 
     def run(self) -> None:
@@ -120,14 +148,26 @@ def _put_text(
         )
 
 
-def draw_hud(frame: np.ndarray, gesture: Gesture) -> None:
-    """Draw the current mode and the controls onto the frame."""
-    _put_text(
-        frame,
-        f"Mode: {gesture.value.upper()}",
-        (config.HUD_MARGIN, config.HUD_MARGIN + config.HUD_LINE_HEIGHT),
-        config.HUD_ACCENT_COLOR,
-    )
+def hud_lines(gesture: Gesture, state: PredictionState) -> list[tuple[str, tuple[int, int, int]]]:
+    """Return the HUD text lines (top-left) with their colours."""
+    lines = [(f"Mode: {gesture.value.upper()}", config.HUD_ACCENT_COLOR)]
+    for rank, pred in enumerate(state.cnn, start=1):
+        lines.append(
+            (f"{rank}. {pred.label} {pred.confidence * config.PERCENT:.0f}%", config.HUD_TEXT_COLOR)
+        )
+    if state.source is not None:
+        lines.append((f"via {state.source}", config.HUD_ACCENT_COLOR))
+    if state.message is not None:
+        lines.append((state.message, config.HUD_WARNING_COLOR))
+    return lines
+
+
+def draw_hud(frame: np.ndarray, gesture: Gesture, state: PredictionState) -> None:
+    """Draw mode, predictions, source label, messages and controls onto the frame."""
+    y = config.HUD_MARGIN + config.HUD_LINE_HEIGHT
+    for text, color in hud_lines(gesture, state):
+        _put_text(frame, text, (config.HUD_MARGIN, y), color)
+        y += config.HUD_LINE_HEIGHT
     bottom = frame.shape[0] - config.HUD_MARGIN
     _put_text(frame, CONTROLS_HINT, (config.HUD_MARGIN, bottom), config.HUD_TEXT_COLOR)
 
@@ -135,9 +175,18 @@ def draw_hud(frame: np.ndarray, gesture: Gesture) -> None:
 def run() -> int:
     """Build the app with real collaborators and run it; return an exit code."""
     try:
-        app = AirDrawingApp(tracker=HandTracker())
-        app.run()
-    except (FileNotFoundError, RuntimeError) as exc:
+        tracker = HandTracker()
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 1
+    try:
+        classifier: Classifier | None = Classifier.from_checkpoint()
+    except FileNotFoundError as exc:
+        logger.warning("%s Predictions are disabled.", exc)
+        classifier = None
+    try:
+        AirDrawingApp(tracker, classifier).run()
+    except RuntimeError as exc:
         logger.error("%s", exc)
         return 1
     return 0
