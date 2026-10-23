@@ -14,12 +14,13 @@ from air_drawing.canvas import Canvas
 from air_drawing.classifier import Classifier, Prediction
 from air_drawing.gestures import Gesture, GestureDebouncer, classify_gesture
 from air_drawing.hand_tracker import HandResult, HandTracker, draw_landmarks
-from air_drawing.llm_fallback import GeminiFallback, LLMResult
-from air_drawing.preprocess import preprocess_strokes, render_for_llm
-from air_drawing.speech import Speaker, make_sentence
+from air_drawing.llm_fallback import GeminiFallback, LLMResult, TextResult
+from air_drawing.preprocess import preprocess_strokes, render_for_llm, render_text_for_llm
+from air_drawing.speech import PhrasePicker, Speaker, text_sentence
 from air_drawing.ui import (
     ACTION_CLEAR,
     ACTION_COLOR,
+    ACTION_MODE,
     ACTION_MUTE,
     ACTION_PREDICT,
     ACTION_QUIT,
@@ -28,6 +29,8 @@ from air_drawing.ui import (
     MODE_DRAW,
     MODE_IDLE,
     MODE_PEN_UP,
+    RECOGNITION_SHAPE,
+    RECOGNITION_TEXT,
     SOURCE_CNN,
     SOURCE_GEMINI,
     Button,
@@ -47,11 +50,15 @@ MSG_NOTHING_DRAWN = "Nothing drawn"
 MSG_NO_MODEL = "CNN model not loaded (run scripts/train.py)"
 MSG_LLM_UNAVAILABLE = "LLM fallback unavailable"
 MSG_ASKING_LLM = "Low confidence, asking Gemini..."
+MSG_TEXT_NEEDS_GEMINI = "Text mode needs Gemini"
+MSG_READING_TEXT = "Reading text with Gemini..."
+MSG_NO_TEXT = "No text recognised"
+TEXT_CONFIDENCE_LABEL = "confidence"
 CONTROLS_HINT = (
     "Index: draw | Index+Middle: pen up | Open hand: clear | Fist: predict | "
     "Hover a button 1s to click | "
     f"Keys: {config.KEY_CLEAR} clear, {config.KEY_PREDICT} predict, {config.KEY_UNDO} undo, "
-    f"{config.KEY_MUTE} mute, {config.KEY_QUIT} quit"
+    f"{config.KEY_MUTE} mute, {config.KEY_TEXT_MODE} shape/text, {config.KEY_QUIT} quit"
 )
 
 
@@ -61,11 +68,18 @@ class PredictionState:
 
     cnn: list[Prediction] = field(default_factory=list)
     llm: LLMResult | None = None
+    text: TextResult | None = None
     source: str | None = None
     message: str | None = None
 
     def card(self) -> CardContent:
         """Convert to the prediction card's content (Gemini label wins as the title)."""
+        if self.text is not None:
+            conf = self.text.confidence
+            bars = [(TEXT_CONFIDENCE_LABEL, conf)] if conf is not None else []
+            return CardContent(
+                title=self.text.text or None, bars=bars, source=self.source, message=self.message
+            )
         if self.llm is not None:
             title: str | None = self.llm.label
         else:
@@ -96,7 +110,11 @@ class AirDrawingApp:
         self._debouncer = GestureDebouncer()
         self._dwell = DwellClicker(clock=clock)
         self.state = PredictionState()
-        self._pending: Future[LLMResult | None] | None = None
+        self._pending: Future[LLMResult | None] | Future[TextResult | None] | None = None
+        self._pending_text = False  # True when the pending call reads handwriting
+        self.recognition = RECOGNITION_SHAPE
+        self._phrases = PhrasePicker()
+        self._last_spoken: tuple[int, str, str] | None = None
         self._toolbar: Toolbar | None = None
         self._hover_id: str | None = None
         self._mouse_hover_id: str | None = None
@@ -113,6 +131,20 @@ class AirDrawingApp:
     def muted(self) -> bool:
         """True when voice output is off (or unavailable)."""
         return self._speaker is None or self._speaker.muted
+
+    @property
+    def text_mode(self) -> bool:
+        """True when drawings are read as handwritten text by Gemini."""
+        return self.recognition == RECOGNITION_TEXT
+
+    def toggle_recognition(self) -> None:
+        """Switch between Shape mode (CNN + fallback) and Text mode (Gemini reads text)."""
+        self.recognition = RECOGNITION_SHAPE if self.text_mode else RECOGNITION_TEXT
+        self.state = PredictionState()  # the old result belongs to the other mode
+        self._pending = None
+        if self.text_mode and (self._fallback is None or not self._fallback.available):
+            self.state.message = MSG_TEXT_NEEDS_GEMINI
+        logger.info("Recognition mode: %s", self.recognition)
 
     def clear(self) -> None:
         """Erase the drawing and the last prediction."""
@@ -146,6 +178,28 @@ class AirDrawingApp:
         self._apply_pen()
 
     def predict(self) -> None:
+        """Recognise the drawing according to the current mode."""
+        if self.text_mode:
+            self.predict_text()
+        else:
+            self.predict_shape()
+
+    def predict_text(self) -> None:
+        """Send the drawing straight to Gemini to read handwritten text (no CNN)."""
+        self.canvas.pen_up()
+        self._pending = None
+        image = render_text_for_llm(self.canvas.strokes)
+        if image is None:
+            self.state = PredictionState(message=MSG_NOTHING_DRAWN)
+            return
+        if self._fallback is None or not self._fallback.available:
+            self.state = PredictionState(message=MSG_TEXT_NEEDS_GEMINI)
+            return
+        self._pending = self._fallback.submit_text(image)
+        self._pending_text = True
+        self.state = PredictionState(message=MSG_READING_TEXT)
+
+    def predict_shape(self) -> None:
         """Classify the drawing with the CNN, asking Gemini if confidence is low."""
         self.canvas.pen_up()
         self._pending = None
@@ -171,6 +225,7 @@ class AirDrawingApp:
             return
         # Speak only once Gemini has answered (or failed), so the user hears one label.
         self._pending = self._fallback.submit(image)
+        self._pending_text = False
         self.state.message = MSG_ASKING_LLM
 
     def poll_llm(self) -> None:
@@ -179,7 +234,10 @@ class AirDrawingApp:
             return
         result = self._pending.result()
         self._pending = None
-        if result is None:
+        if self._pending_text:
+            self._apply_text(result if isinstance(result, TextResult) else None)
+            return
+        if not isinstance(result, LLMResult):
             self.state.message = MSG_LLM_UNAVAILABLE
             if self.state.cnn:
                 self._speak(self.state.cnn[0].label)
@@ -188,6 +246,16 @@ class AirDrawingApp:
             self.state.source = SOURCE_GEMINI
             self.state.message = None
             self._speak(result.label)
+
+    def _apply_text(self, result: TextResult | None) -> None:
+        """Show (and speak) the handwriting read by Gemini."""
+        if result is None:
+            self.state = PredictionState(message=MSG_TEXT_NEEDS_GEMINI)
+            return
+        self.state = PredictionState(text=result, source=SOURCE_GEMINI)
+        if not result.text:
+            self.state.message = MSG_NO_TEXT
+        self._say(result.text, text_sentence(result.text))
 
     def press(self, button: Button) -> None:
         """Run the action of a toolbar button."""
@@ -200,6 +268,8 @@ class AirDrawingApp:
             self.undo()
         elif button.action == ACTION_MUTE:
             self.toggle_mute()
+        elif button.action == ACTION_MODE:
+            self.toggle_recognition()
         elif button.action == ACTION_QUIT:
             self.quit_requested = True
         elif button.action == ACTION_COLOR and button.index is not None:
@@ -219,6 +289,8 @@ class AirDrawingApp:
             self.undo()
         elif key == ord(config.KEY_MUTE):
             self.toggle_mute()
+        elif key == ord(config.KEY_TEXT_MODE):
+            self.toggle_recognition()
         return not self.quit_requested
 
     def on_mouse(self, event: int, x: int, y: int, flags: int, param: object) -> None:
@@ -296,11 +368,12 @@ class AirDrawingApp:
             color_index=self.color_index,
             thickness_index=self.thickness_index,
             muted=self.muted,
+            text_mode=self.text_mode,
         )
         draw_toolbar(frame, self._toolbar, toolbar_state)
         top = self._toolbar.height + config.CARD_Y_OFFSET
         draw_prediction_card(frame, self.state.card(), top)
-        draw_mode_badges(frame, self.mode(gesture), self.muted, top)
+        draw_mode_badges(frame, self.mode(gesture), self.muted, top, self.recognition)
         if self._fingertip is not None:
             draw_progress_ring(frame, self._fingertip, self._dwell.progress)
         bottom = frame.shape[0] - config.HUD_MARGIN
@@ -343,9 +416,21 @@ class AirDrawingApp:
         )
 
     def _speak(self, label: str) -> None:
-        """Say the result once per drawing (the canvas version identifies the drawing)."""
-        if self._speaker is not None:
-            self._speaker.say(make_sentence(label), key=self.canvas.version)
+        """Say a shape label with a varied phrase, once per drawing."""
+        self._say(label, None)
+
+    def _say(self, result: str, sentence: str | None) -> None:
+        """Speak a result once per (drawing, mode, result).
+
+        The canvas version identifies the drawing. The check happens before a phrase
+        is picked, so predicting the same drawing again stays silent even though the
+        phrases are random. `sentence` None means "pick a shape phrase".
+        """
+        key = (self.canvas.version, self.recognition, result)
+        if self._speaker is None or key == self._last_spoken:
+            return
+        self._last_spoken = key
+        self._speaker.say(sentence or self._phrases.sentence(result), key=key)
 
 
 def _put_text(
