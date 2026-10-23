@@ -22,6 +22,7 @@ model's confidence is low, the drawing is sent to Gemini (vision LLM) as a fallb
 - numpy, requests
 - google-genai (Gemini fallback)
 - python-dotenv
+- pyttsx3 (offline text-to-speech)
 - pytest, ruff (dev)
 
 ## 3. Folder structure (STRICT, complete list)
@@ -53,12 +54,16 @@ air-drawing/
 │       ├── model.py            # CNN architecture
 │       ├── classifier.py       # Loads weights, returns top-3 predictions
 │       ├── llm_fallback.py     # Sends drawing image to Gemini
+│       ├── speech.py           # Speaks predictions (pyttsx3, background queue)
+│       ├── ui.py               # Toolbar, air-click dwell, prediction card, badges
 │       └── app.py              # Main loop tying everything together
 └── tests/
     ├── test_preprocess.py
     ├── test_gestures.py
     ├── test_canvas.py
-    └── test_classifier.py
+    ├── test_classifier.py
+    ├── test_speech.py
+    └── test_ui.py
 ```
 
 ## 4. Categories (15)
@@ -77,6 +82,15 @@ Defined only in `config.py`. Everything else imports it from there.
 - Exponential smoothing on fingertip points.
 - On screen: hand landmarks, current gesture/mode, top-3 predictions with %,
   and a "via CNN" / "via Gemini" label.
+- Voice output: after each prediction speak "I think it's a <label>" (Gemini label if it
+  answered). Background thread + queue, no repeat for the same drawing, mute with `m`
+  or the toolbar. Settings (enabled, rate, volume) in `config.py`.
+- Toolbar: rounded buttons Clear, Predict, Undo, Mute/Unmute, Quit, a colour palette
+  (6+ colours) and 2-3 pen thicknesses. Click with the mouse or "air click" (hold the
+  fingertip on a button ~1 s, progress ring shown). No drawing over the toolbar.
+  Pen colour/thickness are display-only; preprocessing uses the raw stroke points.
+- Prediction card (large top-1, top-3 confidence bars, source) and a coloured mode badge
+  (Draw / Pen up / Idle). Extra keys: `u` undo, `m` mute.
 
 ## 6. Preprocessing (critical)
 Quick, Draw! bitmaps are 28x28, black background (0), white strokes (255).

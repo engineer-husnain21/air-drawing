@@ -6,3 +6,4 @@ numpy>=1.26
 requests>=2.31
 google-genai>=1.0
 python-dotenv>=1.0
+pyttsx3>=2.99

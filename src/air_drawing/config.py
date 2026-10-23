@@ -60,6 +60,8 @@ KEY_MASK: int = 0xFF
 KEY_CLEAR: str = "c"
 KEY_PREDICT: str = "p"
 KEY_QUIT: str = "q"
+KEY_MUTE: str = "m"
+KEY_UNDO: str = "u"
 
 # --- Hand tracking -----------------------------------------------------------
 NUM_HANDS: int = 1
@@ -138,12 +140,10 @@ LLM_TEMPERATURE: float = 0.0
 LLM_MAX_WORKERS: int = 1
 
 # --- HUD ---------------------------------------------------------------------
-HUD_FONT_SCALE: float = 0.8
+HUD_HINT_FONT_SCALE: float = 0.5
 HUD_THICKNESS: int = 2
-HUD_LINE_HEIGHT: int = 32
 HUD_MARGIN: int = 20
 HUD_TEXT_COLOR: tuple[int, int, int] = (255, 255, 255)
-HUD_ACCENT_COLOR: tuple[int, int, int] = (0, 220, 255)
 HUD_WARNING_COLOR: tuple[int, int, int] = (0, 0, 255)
 HUD_SHADOW_COLOR: tuple[int, int, int] = (0, 0, 0)
 LANDMARK_COLOR: tuple[int, int, int] = (0, 255, 0)
@@ -153,6 +153,96 @@ LANDMARK_RADIUS: int = 4
 PEN_RADIUS: int = 8
 CONNECTION_THICKNESS: int = 2
 PERCENT: float = 100.0
+
+# --- Voice output (pyttsx3) --------------------------------------------------
+VOICE_ENABLED: bool = True
+VOICE_RATE: int = 170  # words per minute
+VOICE_VOLUME: float = 0.9  # 0.0 - 1.0
+SPEECH_QUEUE_SIZE: int = 4  # newest sentences win when the queue is full
+SPEECH_JOIN_TIMEOUT_S: float = 2.0
+SPEECH_TEMPLATE: str = "I think it's {article} {label}"
+SPEECH_UNKNOWN: str = "I'm not sure what that is"
+VOWELS: str = "aeiou"
+
+# --- Toolbar / palette -------------------------------------------------------
+UI_DESIGN_WIDTH: int = 1280  # layout is designed for this width and scaled to fit
+TOOLBAR_HEIGHT: int = 84
+TOOLBAR_PADDING: int = 14
+TOOLBAR_GAP: int = 10
+TOOLBAR_GROUP_GAP: int = 28
+TOOLBAR_BG_COLOR: tuple[int, int, int] = (40, 30, 30)
+TOOLBAR_BG_ALPHA: float = 0.75
+BUTTON_WIDTH: int = 108
+BUTTON_HEIGHT: int = 56
+BUTTON_RADIUS: int = 16
+BUTTON_FONT_SCALE: float = 0.62
+BUTTON_HOVER_LIGHTEN: float = 0.35  # blend towards white when hovered
+BUTTON_TEXT_COLOR: tuple[int, int, int] = (255, 255, 255)
+BUTTON_DARK_TEXT_COLOR: tuple[int, int, int] = (30, 30, 30)
+BUTTON_SELECTED_COLOR: tuple[int, int, int] = (255, 255, 255)
+BUTTON_SELECTED_THICKNESS: int = 3
+LUMA_WEIGHTS_BGR: tuple[float, float, float] = (0.114, 0.587, 0.299)
+BUTTON_COLORS: dict[str, tuple[int, int, int]] = {  # BGR
+    "clear": (80, 80, 235),
+    "predict": (90, 190, 40),
+    "undo": (0, 160, 255),
+    "mute": (200, 120, 60),
+    "quit": (110, 110, 110),
+}
+SWATCH_SIZE: int = 44
+THICKNESS_BUTTON_WIDTH: int = 56
+THICKNESS_BUTTON_COLOR: tuple[int, int, int] = (90, 75, 75)
+PALETTE: tuple[tuple[str, tuple[int, int, int]], ...] = (  # (name, BGR)
+    ("magenta", (255, 0, 255)),
+    ("cyan", (255, 255, 0)),
+    ("yellow", (0, 255, 255)),
+    ("lime", (0, 255, 0)),
+    ("orange", (0, 140, 255)),
+    ("red", (60, 40, 255)),
+    ("blue", (255, 110, 0)),
+    ("white", (255, 255, 255)),
+)
+PEN_THICKNESSES: tuple[int, ...] = (4, 8, 14)
+DEFAULT_THICKNESS_INDEX: int = 1
+
+# --- Air click (dwell) -------------------------------------------------------
+DWELL_SECONDS: float = 1.0
+PROGRESS_RING_RADIUS: int = 26
+PROGRESS_RING_THICKNESS: int = 5
+PROGRESS_RING_COLOR: tuple[int, int, int] = (0, 230, 255)
+PROGRESS_RING_TRACK_COLOR: tuple[int, int, int] = (80, 80, 80)
+FULL_CIRCLE_DEG: float = 360.0
+RING_START_DEG: float = -90.0  # start at 12 o'clock
+
+# --- Prediction card / mode badge --------------------------------------------
+CARD_X: int = 20
+CARD_Y_OFFSET: int = 16  # below the toolbar
+CARD_WIDTH: int = 330
+CARD_RADIUS: int = 18
+CARD_PADDING: int = 16
+CARD_BG_COLOR: tuple[int, int, int] = (45, 35, 35)
+CARD_BG_ALPHA: float = 0.8
+CARD_TITLE_SCALE: float = 1.4
+CARD_TITLE_THICKNESS: int = 3
+CARD_TITLE_HEIGHT: int = 52
+CARD_TEXT_SCALE: float = 0.6
+CARD_TEXT_THICKNESS: int = 1
+CARD_ROW_HEIGHT: int = 34
+CARD_BAR_HEIGHT: int = 10
+CARD_BAR_TRACK_COLOR: tuple[int, int, int] = (90, 80, 80)
+CARD_BAR_COLORS: tuple[tuple[int, int, int], ...] = ((90, 200, 40), (0, 170, 255), (200, 110, 220))
+CARD_CNN_COLOR: tuple[int, int, int] = (90, 200, 40)
+CARD_GEMINI_COLOR: tuple[int, int, int] = (255, 150, 60)
+BADGE_RADIUS: int = 18
+BADGE_HEIGHT: int = 40
+BADGE_PADDING_X: int = 18
+BADGE_FONT_SCALE: float = 0.7
+BADGE_COLORS: dict[str, tuple[int, int, int]] = {  # BGR
+    "Draw": (90, 190, 40),
+    "Pen up": (0, 160, 255),
+    "Idle": (120, 120, 120),
+}
+MUTED_BADGE_COLOR: tuple[int, int, int] = (60, 60, 200)
 
 
 def get_confidence_threshold() -> float:
