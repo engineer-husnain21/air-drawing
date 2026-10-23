@@ -1,5 +1,6 @@
 """Tests for the speech queue (fake pyttsx3 engine, no real audio)."""
 
+import random
 import threading
 import time
 from collections.abc import Iterator
@@ -7,7 +8,7 @@ from collections.abc import Iterator
 import pytest
 
 from air_drawing import config
-from air_drawing.speech import Speaker, make_sentence
+from air_drawing.speech import PhrasePicker, Speaker, make_sentence, text_sentence
 
 
 class FakeEngine:
@@ -170,3 +171,44 @@ def test_close_stops_thread(spoken: list[str]) -> None:
     s = Speaker(enabled=True, engine_factory=lambda: FakeEngine(spoken))
     s.close()
     assert not s.say("after close")
+
+
+# --- Varied phrases ---------------------------------------------------------------
+
+
+def test_text_sentence() -> None:
+    assert text_sentence("hello") == "You wrote hello"
+    assert text_sentence("  ") == config.SPEECH_UNKNOWN
+
+
+def test_phrase_picker_never_repeats_twice_in_a_row() -> None:
+    picker = PhrasePicker(rng=random.Random(0))
+    picks = [picker.pick() for _ in range(200)]
+    assert all(a != b for a, b in zip(picks, picks[1:], strict=False))
+    assert set(picks) == set(config.SHAPE_PHRASES)  # every phrase gets used
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_phrase_picker_sentences_use_label_and_article(seed: int) -> None:
+    picker = PhrasePicker(rng=random.Random(seed))
+    sentences = [picker.sentence("apple") for _ in range(20)]
+    assert all("apple" in s for s in sentences)
+    assert not any(" a apple" in s for s in sentences)
+    assert all(a != b for a, b in zip(sentences, sentences[1:], strict=False))
+
+
+def test_phrase_picker_other_keeps_unsure_phrase() -> None:
+    picker = PhrasePicker(rng=random.Random(0))
+    assert picker.sentence(config.OTHER_LABEL) == config.SPEECH_UNKNOWN
+
+
+def test_phrase_picker_single_phrase_and_validation() -> None:
+    picker = PhrasePicker(phrases=("{label}!",))
+    assert picker.sentence("cat") == "cat!"
+    assert picker.sentence("cat") == "cat!"  # nothing else to choose from
+    with pytest.raises(ValueError):
+        PhrasePicker(phrases=())
+
+
+def test_make_sentence_with_custom_template() -> None:
+    assert make_sentence("umbrella", "Looks like {article} {label}") == "Looks like an umbrella"

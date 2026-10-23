@@ -7,6 +7,7 @@ A fresh pyttsx3 engine is created per sentence because reusing one engine makes
 
 import logging
 import queue
+import random
 import threading
 from collections.abc import Callable, Hashable
 from typing import Any
@@ -20,12 +21,47 @@ EngineFactory = Callable[[], Any]
 _STOP = object()  # sentinel that ends the worker thread
 
 
-def make_sentence(label: str) -> str:
-    """Return the sentence to speak for a predicted label."""
+def make_sentence(label: str, template: str = config.SPEECH_TEMPLATE) -> str:
+    """Return the sentence to speak for a predicted label using `template`.
+
+    The template may use `{article}` ("a"/"an") and `{label}`.
+    """
     if label == config.OTHER_LABEL:
         return config.SPEECH_UNKNOWN
     article = "an" if label[:1].lower() in config.VOWELS else "a"
-    return config.SPEECH_TEMPLATE.format(article=article, label=label)
+    return template.format(article=article, label=label)
+
+
+def text_sentence(text: str) -> str:
+    """Return the sentence to speak for recognised handwriting."""
+    text = text.strip()
+    return config.TEXT_PHRASE.format(text=text) if text else config.SPEECH_UNKNOWN
+
+
+class PhrasePicker:
+    """Picks a random shape phrase, never the same one twice in a row."""
+
+    def __init__(
+        self, phrases: tuple[str, ...] = config.SHAPE_PHRASES, rng: random.Random | None = None
+    ) -> None:
+        """Create a picker; `rng` is injectable for reproducible tests."""
+        if not phrases:
+            raise ValueError("phrases must not be empty")
+        self._phrases = phrases
+        self._rng = rng or random.Random()
+        self.last: str | None = None
+
+    def pick(self) -> str:
+        """Return a phrase template different from the previous one (when possible)."""
+        choices = [p for p in self._phrases if p != self.last] or list(self._phrases)
+        self.last = self._rng.choice(choices)
+        return self.last
+
+    def sentence(self, label: str) -> str:
+        """Return a varied sentence for a shape label ("other" keeps the unsure phrase)."""
+        if label == config.OTHER_LABEL:
+            return config.SPEECH_UNKNOWN
+        return make_sentence(label, self.pick())
 
 
 def _default_engine_factory() -> Any:
