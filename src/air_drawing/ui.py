@@ -19,6 +19,7 @@ ACTION_MUTE = "mute"
 ACTION_QUIT = "quit"
 ACTION_COLOR = "color"
 ACTION_THICKNESS = "thickness"
+ACTION_MODE = "mode"
 
 ACTION_BUTTONS: tuple[tuple[str, str], ...] = (
     (ACTION_CLEAR, "Clear"),
@@ -26,12 +27,17 @@ ACTION_BUTTONS: tuple[tuple[str, str], ...] = (
     (ACTION_UNDO, "Undo"),
     (ACTION_MUTE, "Mute"),
     (ACTION_QUIT, "Quit"),
+    (ACTION_MODE, "Shape / Text"),
 )
 UNMUTE_LABEL = "Unmute"
 MODE_DRAW = "Draw"
 MODE_PEN_UP = "Pen up"
 MODE_IDLE = "Idle"
 MUTED_BADGE = "Muted"
+RECOGNITION_SHAPE = "Shape"
+RECOGNITION_TEXT = "Text"
+RECOGNITION_BADGE_SUFFIX = " mode"
+ELLIPSIS = "..."
 SOURCE_CNN = "CNN"
 SOURCE_GEMINI = "Gemini"
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -80,15 +86,9 @@ class Toolbar:
         self.buttons: list[Button] = []
         x = config.TOOLBAR_PADDING
         for action, label in ACTION_BUTTONS:
-            self._add(
-                action,
-                label,
-                x,
-                config.BUTTON_WIDTH,
-                config.BUTTON_HEIGHT,
-                config.BUTTON_COLORS[action],
-            )
-            x += config.BUTTON_WIDTH + config.TOOLBAR_GAP
+            width = _button_width(action)
+            self._add(action, label, x, width, config.BUTTON_HEIGHT, config.BUTTON_COLORS[action])
+            x += width + config.TOOLBAR_GAP
         x += config.TOOLBAR_GROUP_GAP - config.TOOLBAR_GAP
         for i, (name, color) in enumerate(config.PALETTE):
             self._add(ACTION_COLOR, name, x, config.SWATCH_SIZE, config.SWATCH_SIZE, color, i)
@@ -135,9 +135,14 @@ class Toolbar:
         )
 
 
+def _button_width(action: str) -> int:
+    """Design width of an action button (the mode button is wider for its label)."""
+    return config.MODE_BUTTON_WIDTH if action == ACTION_MODE else config.BUTTON_WIDTH
+
+
 def _design_width() -> int:
     """Total toolbar width in design pixels."""
-    actions = len(ACTION_BUTTONS) * (config.BUTTON_WIDTH + config.TOOLBAR_GAP)
+    actions = sum(_button_width(a) + config.TOOLBAR_GAP for a, _ in ACTION_BUTTONS)
     swatches = len(config.PALETTE) * (config.SWATCH_SIZE + config.TOOLBAR_GAP)
     thick = len(config.PEN_THICKNESSES) * (config.THICKNESS_BUTTON_WIDTH + config.TOOLBAR_GAP)
     gaps = 2 * (config.TOOLBAR_GROUP_GAP - config.TOOLBAR_GAP) - config.TOOLBAR_GAP
@@ -265,6 +270,7 @@ class ToolbarState:
     color_index: int = 0
     thickness_index: int = config.DEFAULT_THICKNESS_INDEX
     muted: bool = False
+    text_mode: bool = False
 
 
 def draw_toolbar(frame: np.ndarray, toolbar: Toolbar, state: ToolbarState) -> None:
@@ -283,7 +289,10 @@ def draw_toolbar(frame: np.ndarray, toolbar: Toolbar, state: ToolbarState) -> No
     font_scale = config.BUTTON_FONT_SCALE * toolbar.scale
     for b in toolbar.buttons:
         hovered = b.id == state.hover_id
-        fill = lighten(b.color, config.BUTTON_HOVER_LIGHTEN) if hovered else b.color
+        base = b.color
+        if b.action == ACTION_MODE and state.text_mode:
+            base = config.BUTTON_COLORS["mode_text"]
+        fill = lighten(base, config.BUTTON_HOVER_LIGHTEN) if hovered else base
         rounded_rect(frame, b.x, b.y, b.w, b.h, radius, fill)
         selected = (b.action == ACTION_COLOR and b.index == state.color_index) or (
             b.action == ACTION_THICKNESS and b.index == state.thickness_index
@@ -348,8 +357,28 @@ class CardContent:
     message: str | None = None
 
 
+def fit_title(text: str, max_width: int) -> tuple[str, float]:
+    """Return (text, font scale) so the title fits `max_width` pixels.
+
+    The font shrinks down to CARD_MIN_TITLE_SCALE first, then the text is shortened
+    with an ellipsis. Very long text is capped at CARD_MAX_TITLE_CHARS.
+    """
+    if len(text) > config.CARD_MAX_TITLE_CHARS:
+        text = text[: config.CARD_MAX_TITLE_CHARS - len(ELLIPSIS)] + ELLIPSIS
+
+    def width(t: str, scale: float) -> int:
+        return cv2.getTextSize(t, FONT, scale, config.CARD_TITLE_THICKNESS)[0][0]
+
+    scale = config.CARD_TITLE_SCALE
+    if width(text, scale) > max_width:
+        scale = max(config.CARD_MIN_TITLE_SCALE, scale * max_width / width(text, scale))
+    while width(text, scale) > max_width and len(text) > len(ELLIPSIS) + 1:
+        text = text.removesuffix(ELLIPSIS)[:-1] + ELLIPSIS
+    return text, scale
+
+
 def draw_prediction_card(frame: np.ndarray, content: CardContent, top: int) -> None:
-    """Draw a card: large top-1 label, top-3 confidence bars, source and message."""
+    """Draw a card: large top-1 label or text, confidence bars, source and message."""
     if content.title is None and not content.bars and content.message is None:
         return
     pad, row = config.CARD_PADDING, config.CARD_ROW_HEIGHT
@@ -357,7 +386,11 @@ def draw_prediction_card(frame: np.ndarray, content: CardContent, top: int) -> N
     height += config.CARD_TITLE_HEIGHT if content.title else 0
     height += row if content.source else 0
     height += row if content.message else 0
-    x, w = config.CARD_X, config.CARD_WIDTH
+    x = config.CARD_X
+    max_w = max(config.CARD_WIDTH, frame.shape[1] - 2 * config.CARD_X)
+    title, title_scale = fit_title(content.title or "", max_w - 2 * pad)
+    title_w = cv2.getTextSize(title, FONT, title_scale, config.CARD_TITLE_THICKNESS)[0][0]
+    w = min(max(config.CARD_WIDTH, title_w + 2 * pad), max_w)
     translucent_rounded_rect(
         frame, x, top, w, height, config.CARD_RADIUS, config.CARD_BG_COLOR, config.CARD_BG_ALPHA
     )
@@ -366,10 +399,10 @@ def draw_prediction_card(frame: np.ndarray, content: CardContent, top: int) -> N
         y += config.CARD_TITLE_HEIGHT
         cv2.putText(
             frame,
-            content.title,
+            title,
             (x + pad, y - pad // 2),
             FONT,
-            config.CARD_TITLE_SCALE,
+            title_scale,
             config.BUTTON_TEXT_COLOR,
             config.CARD_TITLE_THICKNESS,
             cv2.LINE_AA,
@@ -456,10 +489,16 @@ def draw_badge(frame: np.ndarray, text: str, color: Color, right: int, top: int)
     return x
 
 
-def draw_mode_badges(frame: np.ndarray, mode: str, muted: bool, top: int) -> None:
-    """Draw the mode badge (and a "Muted" badge) in the top-right corner."""
+def draw_mode_badges(
+    frame: np.ndarray, mode: str, muted: bool, top: int, recognition: str | None = None
+) -> None:
+    """Draw the drawing-mode badge, the Shape/Text badge and a "Muted" badge (top right)."""
     right = frame.shape[1] - config.HUD_MARGIN
     color = config.BADGE_COLORS.get(mode, config.BADGE_COLORS[MODE_IDLE])
     left = draw_badge(frame, mode, color, right, top)
+    if recognition is not None:
+        rec_color = config.RECOGNITION_BADGE_COLORS[recognition]
+        text = recognition + RECOGNITION_BADGE_SUFFIX
+        left = draw_badge(frame, text, rec_color, left - config.TOOLBAR_GAP, top)
     if muted:
         draw_badge(frame, MUTED_BADGE, config.MUTED_BADGE_COLOR, left - config.TOOLBAR_GAP, top)

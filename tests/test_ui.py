@@ -1,12 +1,17 @@
 """Tests for toolbar hit-testing, air-click dwell timing and UI rendering."""
 
+import cv2
 import numpy as np
 import pytest
 
 from air_drawing import config
 from air_drawing.ui import (
     ACTION_COLOR,
+    ACTION_MODE,
     ACTION_THICKNESS,
+    ELLIPSIS,
+    FONT,
+    RECOGNITION_TEXT,
     Button,
     CardContent,
     DwellClicker,
@@ -16,6 +21,7 @@ from air_drawing.ui import (
     draw_prediction_card,
     draw_progress_ring,
     draw_toolbar,
+    fit_title,
 )
 
 # --- Button / toolbar hit-testing -------------------------------------------------
@@ -169,3 +175,52 @@ def test_empty_card_draws_nothing() -> None:
     img = frame()
     draw_prediction_card(img, CardContent(), top=100)
     assert not img.any()
+
+
+# --- Mode button, badges and long titles ------------------------------------------
+
+
+def test_toolbar_has_mode_button_that_fits() -> None:
+    for width in (640, 1280):
+        toolbar = Toolbar(width)
+        mode = [b for b in toolbar.buttons if b.action == ACTION_MODE]
+        assert len(mode) == 1
+        assert toolbar.hit_test(mode[0].center) == mode[0]
+        assert max(b.x + b.w for b in toolbar.buttons) <= width
+
+
+def test_mode_button_color_changes_in_text_mode() -> None:
+    toolbar = Toolbar(config.UI_DESIGN_WIDTH)
+    mode = next(b for b in toolbar.buttons if b.action == ACTION_MODE)
+    shape_img, text_img = frame(), frame()
+    draw_toolbar(shape_img, toolbar, ToolbarState(text_mode=False))
+    draw_toolbar(text_img, toolbar, ToolbarState(text_mode=True))
+    x, y = mode.x + 4, mode.center[1]
+    assert tuple(shape_img[y, x]) == config.BUTTON_COLORS["mode"]
+    assert tuple(text_img[y, x]) == config.BUTTON_COLORS["mode_text"]
+
+
+def test_fit_title_keeps_short_text() -> None:
+    assert fit_title("cat", 1000) == ("cat", config.CARD_TITLE_SCALE)
+
+
+def test_fit_title_shrinks_then_shortens_long_text() -> None:
+    long_text = "the quick brown fox jumps over the lazy dog again and again"
+    text, scale = fit_title(long_text, 300)
+    assert config.CARD_MIN_TITLE_SCALE <= scale < config.CARD_TITLE_SCALE
+    assert text.endswith(ELLIPSIS)
+    assert len(text) <= config.CARD_MAX_TITLE_CHARS
+    assert cv2.getTextSize(text, FONT, scale, config.CARD_TITLE_THICKNESS)[0][0] <= 300
+
+
+def test_recognition_badge_is_drawn() -> None:
+    plain, with_badge = frame(), frame()
+    draw_mode_badges(plain, "Draw", muted=False, top=100)
+    draw_mode_badges(with_badge, "Draw", muted=False, top=100, recognition=RECOGNITION_TEXT)
+    assert (with_badge != 0).sum() > (plain != 0).sum()
+
+
+def test_long_text_card_stays_inside_frame() -> None:
+    img = frame(640, 480)
+    draw_prediction_card(img, CardContent(title="w" * 200, source="Gemini"), top=100)
+    assert img[:, -1].sum() == 0  # nothing drawn on the right edge
