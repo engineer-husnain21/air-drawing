@@ -9,11 +9,14 @@ import torch
 from air_drawing import config
 from air_drawing.classifier import Classifier
 from air_drawing.llm_fallback import (
+    TEXT_PROMPT,
     GeminiFallback,
     LLMResult,
     LLMUnavailableError,
+    TextResult,
     build_prompt,
     parse_response,
+    parse_text_response,
 )
 from air_drawing.model import QuickDrawCNN
 
@@ -159,5 +162,39 @@ def test_submit_without_config_returns_none() -> None:
     fallback = GeminiFallback(api_key="", model="")
     try:
         assert fallback.submit(drawing()).result(timeout=5) is None
+    finally:
+        fallback.close()
+
+
+# --- Gemini text reading --------------------------------------------------------------
+
+
+def test_parse_text_response() -> None:
+    assert parse_text_response('{"text": " Hi  there ", "confidence": 0.7}') == TextResult(
+        "Hi there", 0.7
+    )
+    assert parse_text_response('```json\n{"text": null}\n```') == TextResult("", None)
+
+
+@pytest.mark.parametrize("reply", ["nope", '{"label": "cat"}', "[1, 2]"])
+def test_parse_text_response_invalid(reply: str) -> None:
+    with pytest.raises(LLMUnavailableError):
+        parse_text_response(reply)
+
+
+def test_read_text_uses_text_prompt() -> None:
+    client = FakeClient('{"text": "abc", "confidence": 0.5}')
+    fallback = GeminiFallback(model="m", client=client)
+    try:
+        assert fallback.read_text(drawing()) == TextResult("abc", 0.5)
+        assert TEXT_PROMPT in client.models.calls[0]["contents"]
+    finally:
+        fallback.close()
+
+
+def test_submit_text_swallows_errors() -> None:
+    fallback = GeminiFallback(model="m", client=FakeClient(error=RuntimeError("down")))
+    try:
+        assert fallback.submit_text(drawing()).result(timeout=5) is None
     finally:
         fallback.close()

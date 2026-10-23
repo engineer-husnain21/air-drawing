@@ -71,3 +71,29 @@ def render_for_llm(strokes: list[Stroke]) -> np.ndarray | None:
     if image is None:
         return None
     return cv2.bitwise_not(image)
+
+
+def render_text_for_llm(
+    strokes: list[Stroke],
+    long_side: int = config.TEXT_IMAGE_LONG_SIDE,
+    padding: int = config.TEXT_IMAGE_PADDING,
+    thickness: int = config.TEXT_STROKE_THICKNESS,
+) -> np.ndarray | None:
+    """Render handwriting black-on-white for a vision LLM, or None if empty.
+
+    Unlike the square shape renderer, the aspect ratio is kept (words are wide) and
+    the stroke width is fixed in output pixels, so letters neither vanish nor merge
+    however large or small they were written.
+    """
+    non_empty = [np.asarray(s, dtype=np.float64) for s in strokes if len(s) > 0]
+    if not non_empty:
+        return None
+    points = np.concatenate(non_empty)
+    lo = points.min(axis=0)
+    size = points.max(axis=0) - lo
+    scale = (long_side - 2 * padding) / max(float(size.max()), 1.0)
+    width, height = (np.ceil(size * scale).astype(int) + 2 * padding).tolist()
+    scaled = [list(map(tuple, (s - lo) * scale + padding)) for s in non_empty]
+    image = np.full((height, width), int(config.PIXEL_MAX), dtype=np.uint8)
+    draw_strokes(image, scaled, color=0, thickness=thickness)
+    return image

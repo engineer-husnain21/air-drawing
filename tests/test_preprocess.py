@@ -3,6 +3,7 @@
 import math
 
 import numpy as np
+import pytest
 import torch
 
 from air_drawing import config
@@ -10,6 +11,7 @@ from air_drawing.preprocess import (
     bitmaps_to_tensor,
     preprocess_strokes,
     render_for_llm,
+    render_text_for_llm,
     strokes_to_bitmap,
 )
 
@@ -97,3 +99,30 @@ def test_llm_image_is_black_on_white() -> None:
     assert image.shape == (config.LLM_IMAGE_SIZE, config.LLM_IMAGE_SIZE)
     assert image[0, 0] == 255
     assert image.min() == 0
+
+
+def test_text_image_keeps_aspect_ratio_and_is_black_on_white() -> None:
+    word = [[(0, 0), (0, 100)], [(50, 0), (50, 100)], [(400, 0), (400, 100)]]  # wide
+    image = render_text_for_llm(word)
+    assert image is not None
+    height, width = image.shape
+    assert width == config.TEXT_IMAGE_LONG_SIDE
+    inner_w = width - 2 * config.TEXT_IMAGE_PADDING
+    inner_h = height - 2 * config.TEXT_IMAGE_PADDING
+    assert inner_w / inner_h == pytest.approx(400 / 100, rel=0.02)
+    assert image[0, 0] == 255 and image.min() == 0
+
+
+@pytest.mark.parametrize("scale", [0.2, 1.0, 5.0])
+def test_text_stroke_width_is_fixed_in_output_pixels(scale: float) -> None:
+    stroke = [[(0, 0), (0, 300 * scale)]]  # a vertical bar
+    image = render_text_for_llm(stroke)
+    assert image is not None
+    middle_row = image[image.shape[0] // 2]
+    ink = int((middle_row < 128).sum())
+    assert abs(ink - config.TEXT_STROKE_THICKNESS) <= 2
+
+
+def test_text_image_empty_is_none() -> None:
+    assert render_text_for_llm([]) is None
+    assert render_text_for_llm([[]]) is None

@@ -1,4 +1,4 @@
-"""Gemini vision fallback for low-confidence CNN predictions.
+"""Gemini vision: fallback for low-confidence CNN predictions and handwriting reading.
 
 Calls run in a background thread and every error is swallowed and logged,
 so the webcam loop never blocks or crashes because of the LLM.
@@ -23,6 +23,13 @@ PROMPT_TEMPLATE = (
     'If none fits, use "{other}". '
     'Respond only with JSON: {{"label": "<one label>", "confidence": <number 0 to 1>}}.'
 )
+TEXT_PROMPT = (
+    "This image shows handwriting written in the air with a finger, so the strokes are "
+    "shaky and letters may touch. Read the handwritten text exactly as written (letters, "
+    "digits or words). "
+    'Respond only with JSON: {"text": "<the text>", "confidence": <number 0 to 1>}. '
+    'If nothing is readable, use an empty text "".'
+)
 
 
 class LLMUnavailableError(Exception):
@@ -37,29 +44,61 @@ class LLMResult:
     confidence: float | None
 
 
+@dataclass(frozen=True)
+class TextResult:
+    """Handwritten text read by the LLM, with its self-reported confidence if any."""
+
+    text: str
+    confidence: float | None
+
+
 def build_prompt(categories: tuple[str, ...] | list[str]) -> str:
     """Return the classification prompt for the given categories."""
     return PROMPT_TEMPLATE.format(categories=", ".join(categories), other=config.OTHER_LABEL)
 
 
-def parse_response(text: str, categories: tuple[str, ...] | list[str]) -> LLMResult:
-    """Parse the model's JSON reply; unknown labels become "other"."""
+def _load_json(text: str) -> dict[str, Any]:
+    """Parse a JSON object, tolerating Markdown code fences around it."""
     cleaned = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
         data = json.loads(cleaned)
-        label = str(data["label"]).strip().lower()
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    except json.JSONDecodeError as exc:
         raise LLMUnavailableError(f"Unparseable LLM response: {text!r}") from exc
+    if not isinstance(data, dict):
+        raise LLMUnavailableError(f"Expected a JSON object, got: {text!r}")
+    return data
+
+
+def _confidence(data: dict[str, Any]) -> float | None:
+    """Return the "confidence" field clamped to [0, 1], or None if missing/invalid."""
+    try:
+        return min(max(float(data["confidence"]), 0.0), 1.0)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def parse_response(text: str, categories: tuple[str, ...] | list[str]) -> LLMResult:
+    """Parse the model's JSON reply; unknown labels become "other"."""
+    data = _load_json(text)
+    try:
+        label = str(data["label"]).strip().lower()
+    except KeyError as exc:
+        raise LLMUnavailableError(f"Missing label in LLM response: {text!r}") from exc
     if label not in categories:
         if label != config.OTHER_LABEL:
             logger.warning("LLM returned unknown label %r, using %r", label, config.OTHER_LABEL)
         label = config.OTHER_LABEL
-    confidence: float | None
-    try:
-        confidence = min(max(float(data["confidence"]), 0.0), 1.0)
-    except (KeyError, TypeError, ValueError):
-        confidence = None
-    return LLMResult(label=label, confidence=confidence)
+    return LLMResult(label=label, confidence=_confidence(data))
+
+
+def parse_text_response(text: str) -> TextResult:
+    """Parse the model's JSON reply for handwriting; whitespace is normalised."""
+    data = _load_json(text)
+    if "text" not in data:
+        raise LLMUnavailableError(f"Missing text in LLM response: {text!r}")
+    value = data["text"]
+    words = "" if value is None else " ".join(str(value).split())
+    return TextResult(text=words, confidence=_confidence(data))
 
 
 def encode_png(image: np.ndarray) -> bytes:
@@ -71,7 +110,10 @@ def encode_png(image: np.ndarray) -> bytes:
 
 
 class GeminiFallback:
-    """Classifies drawings with Gemini; configured from GEMINI_API_KEY / GEMINI_MODEL."""
+    """Classifies drawings or reads handwriting with Gemini.
+
+    Configured from GEMINI_API_KEY / GEMINI_MODEL.
+    """
 
     def __init__(
         self,
@@ -95,7 +137,17 @@ class GeminiFallback:
         return bool(self._model) and (self._client is not None or bool(self._api_key))
 
     def classify(self, image: np.ndarray) -> LLMResult:
-        """Blocking call to Gemini; raises LLMUnavailableError on any failure."""
+        """Blocking shape classification; raises LLMUnavailableError on any failure."""
+        return parse_response(
+            self._generate(image, build_prompt(self._categories)), self._categories
+        )
+
+    def read_text(self, image: np.ndarray) -> TextResult:
+        """Blocking handwriting recognition; raises LLMUnavailableError on any failure."""
+        return parse_text_response(self._generate(image, TEXT_PROMPT))
+
+    def _generate(self, image: np.ndarray, prompt: str) -> str:
+        """Send the image and prompt to Gemini and return the raw text reply."""
         if not self.available:
             raise LLMUnavailableError(
                 f"Set {config.GEMINI_API_KEY_ENV} and {config.GEMINI_MODEL_ENV} in .env"
@@ -107,7 +159,7 @@ class GeminiFallback:
                 model=self._model,
                 contents=[
                     types.Part.from_bytes(data=encode_png(image), mime_type="image/png"),
-                    build_prompt(self._categories),
+                    prompt,
                 ],
                 config=types.GenerateContentConfig(
                     temperature=config.LLM_TEMPERATURE,
@@ -121,11 +173,15 @@ class GeminiFallback:
             raise LLMUnavailableError(f"Gemini call failed: {exc}") from exc
         if not text:
             raise LLMUnavailableError("Empty Gemini response")
-        return parse_response(text, self._categories)
+        return text
 
     def submit(self, image: np.ndarray) -> "Future[LLMResult | None]":
         """Classify in a background thread; the future yields None on failure."""
         return self._executor.submit(self._safe_classify, image)
+
+    def submit_text(self, image: np.ndarray) -> "Future[TextResult | None]":
+        """Read handwriting in a background thread; the future yields None on failure."""
+        return self._executor.submit(self._safe_read_text, image)
 
     def close(self) -> None:
         """Stop the background worker without waiting for pending calls."""
@@ -139,6 +195,16 @@ class GeminiFallback:
             logger.warning("LLM fallback unavailable: %s", exc)
             return None
         logger.info("Gemini says %s (confidence %s)", result.label, result.confidence)
+        return result
+
+    def _safe_read_text(self, image: np.ndarray) -> TextResult | None:
+        """Run read_text(), logging and swallowing every error."""
+        try:
+            result = self.read_text(image)
+        except Exception as exc:
+            logger.warning("Gemini text reading unavailable: %s", exc)
+            return None
+        logger.info("Gemini read %r (confidence %s)", result.text, result.confidence)
         return result
 
     def _get_client(self) -> Any:
