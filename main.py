@@ -11,13 +11,13 @@ if str(SRC_DIR) not in sys.path:
 from air_drawing.app import run  # noqa: E402
 
 
-def main() -> None:
-    """Configure logging and start the app."""
+def main() -> int:
+    """Configure logging and start the app; return an exit code."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    run()
+    return run()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
