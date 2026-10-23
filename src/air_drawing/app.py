@@ -1,6 +1,7 @@
-"""Main loop: webcam -> hand tracking -> gestures -> canvas -> CNN prediction."""
+"""Main loop: webcam -> hand tracking -> gestures -> canvas -> CNN (+ Gemini fallback)."""
 
 import logging
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 
 import cv2
@@ -11,13 +12,17 @@ from air_drawing.canvas import Canvas
 from air_drawing.classifier import Classifier, Prediction
 from air_drawing.gestures import Gesture, GestureDebouncer, classify_gesture
 from air_drawing.hand_tracker import HandResult, HandTracker, draw_landmarks
-from air_drawing.preprocess import preprocess_strokes
+from air_drawing.llm_fallback import GeminiFallback, LLMResult
+from air_drawing.preprocess import preprocess_strokes, render_for_llm
 
 logger = logging.getLogger(__name__)
 
 MSG_NOTHING_DRAWN = "Nothing drawn"
 MSG_NO_MODEL = "CNN model not loaded (run scripts/train.py)"
+MSG_LLM_UNAVAILABLE = "LLM fallback unavailable"
+MSG_ASKING_LLM = "Low confidence, asking Gemini..."
 SOURCE_CNN = "CNN"
+SOURCE_GEMINI = "Gemini"
 CONTROLS_HINT = (
     "Index: draw | Index+Middle: pen up | Open hand: clear | Fist: predict | "
     f"Keys: {config.KEY_CLEAR} clear, {config.KEY_PREDICT} predict, {config.KEY_QUIT} quit"
@@ -29,6 +34,7 @@ class PredictionState:
     """What the HUD shows about the last prediction."""
 
     cnn: list[Prediction] = field(default_factory=list)
+    llm: LLMResult | None = None
     source: str | None = None
     message: str | None = None
 
@@ -36,13 +42,22 @@ class PredictionState:
 class AirDrawingApp:
     """Ties tracking, gestures, drawing and recognition together."""
 
-    def __init__(self, tracker: HandTracker, classifier: Classifier | None) -> None:
-        """Store collaborators; classifier may be None if no weights are available."""
+    def __init__(
+        self,
+        tracker: HandTracker,
+        classifier: Classifier | None,
+        fallback: GeminiFallback | None,
+        threshold: float = config.DEFAULT_CONFIDENCE_THRESHOLD,
+    ) -> None:
+        """Store collaborators; classifier/fallback may be None if unavailable."""
         self._tracker = tracker
         self._classifier = classifier
+        self._fallback = fallback
+        self._threshold = threshold
         self.canvas = Canvas()
         self._debouncer = GestureDebouncer()
         self.state = PredictionState()
+        self._pending: Future[LLMResult | None] | None = None
 
     # --- actions --------------------------------------------------------------
 
@@ -50,12 +65,15 @@ class AirDrawingApp:
         """Erase the drawing and the last prediction."""
         self.canvas.clear()
         self.state = PredictionState()
+        self._pending = None  # any in-flight LLM answer is now stale and ignored
         logger.info("Canvas cleared")
 
     def predict(self) -> None:
-        """Classify the drawing with the CNN."""
+        """Classify the drawing with the CNN, asking Gemini if confidence is low."""
         self.canvas.pen_up()
-        tensor = preprocess_strokes(self.canvas.strokes)
+        self._pending = None
+        strokes = self.canvas.strokes
+        tensor = preprocess_strokes(strokes)
         if tensor is None:
             self.state = PredictionState(message=MSG_NOTHING_DRAWN)
             return
@@ -66,6 +84,27 @@ class AirDrawingApp:
         self.state = PredictionState(cnn=predictions, source=SOURCE_CNN)
         top = predictions[0]
         logger.info("CNN: %s (%.0f%%)", top.label, top.confidence * config.PERCENT)
+        if top.confidence >= self._threshold:
+            return
+        image = render_for_llm(strokes)
+        if self._fallback is None or not self._fallback.available or image is None:
+            self.state.message = MSG_LLM_UNAVAILABLE
+            return
+        self._pending = self._fallback.submit(image)
+        self.state.message = MSG_ASKING_LLM
+
+    def poll_llm(self) -> None:
+        """Apply the Gemini answer once the background call has finished."""
+        if self._pending is None or not self._pending.done():
+            return
+        result = self._pending.result()
+        self._pending = None
+        if result is None:
+            self.state.message = MSG_LLM_UNAVAILABLE
+        else:
+            self.state.llm = result
+            self.state.source = SOURCE_GEMINI
+            self.state.message = None
 
     def handle_key(self, key: int) -> bool:
         """React to a key press; return False when the app should quit."""
@@ -94,6 +133,7 @@ class AirDrawingApp:
                 self.clear()
             elif stable == Gesture.PREDICT:
                 self.predict()
+        self.poll_llm()
         return stable
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
@@ -129,6 +169,8 @@ class AirDrawingApp:
             capture.release()
             cv2.destroyAllWindows()
             self._tracker.close()
+            if self._fallback is not None:
+                self._fallback.close()
 
 
 def _put_text(
@@ -151,6 +193,10 @@ def _put_text(
 def hud_lines(gesture: Gesture, state: PredictionState) -> list[tuple[str, tuple[int, int, int]]]:
     """Return the HUD text lines (top-left) with their colours."""
     lines = [(f"Mode: {gesture.value.upper()}", config.HUD_ACCENT_COLOR)]
+    if state.llm is not None:
+        conf = state.llm.confidence
+        suffix = f" ({conf * config.PERCENT:.0f}%)" if conf is not None else ""
+        lines.append((f"Gemini: {state.llm.label}{suffix}", config.HUD_ACCENT_COLOR))
     for rank, pred in enumerate(state.cnn, start=1):
         lines.append(
             (f"{rank}. {pred.label} {pred.confidence * config.PERCENT:.0f}%", config.HUD_TEXT_COLOR)
@@ -184,8 +230,18 @@ def run() -> int:
     except FileNotFoundError as exc:
         logger.warning("%s Predictions are disabled.", exc)
         classifier = None
+    fallback = GeminiFallback()
+    if not fallback.available:
+        logger.warning(
+            "%s: set %s and %s in .env",
+            MSG_LLM_UNAVAILABLE,
+            config.GEMINI_API_KEY_ENV,
+            config.GEMINI_MODEL_ENV,
+        )
+    threshold = config.get_confidence_threshold()
+    logger.info("Confidence threshold: %.2f", threshold)
     try:
-        AirDrawingApp(tracker, classifier).run()
+        AirDrawingApp(tracker, classifier, fallback, threshold).run()
     except RuntimeError as exc:
         logger.error("%s", exc)
         return 1
