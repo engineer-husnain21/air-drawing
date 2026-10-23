@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from air_drawing.canvas import Canvas, PointSmoother, draw_strokes
+from air_drawing.preprocess import preprocess_strokes
 
 
 def test_smoother_first_point_passthrough() -> None:
@@ -94,3 +95,68 @@ def test_draw_single_point_stroke_as_dot() -> None:
     image = np.zeros((50, 50), dtype=np.uint8)
     draw_strokes(image, [[(25, 25)]], color=255, thickness=6)
     assert image[25, 25] > 0
+
+
+def test_undo_removes_last_stroke() -> None:
+    canvas = make_canvas()
+    canvas.add_point((0, 0))
+    canvas.pen_up()
+    canvas.add_point((5, 5))
+    assert canvas.undo()
+    assert canvas.strokes == [[(0, 0)]]
+    assert canvas.undo()
+    assert not canvas.undo()
+    assert canvas.is_empty
+
+
+def test_undo_ends_stroke_in_progress() -> None:
+    canvas = make_canvas()
+    canvas.add_point((0, 0))
+    canvas.undo()
+    assert not canvas.is_drawing
+    canvas.add_point((9, 9))
+    assert canvas.strokes == [[(9, 9)]]
+
+
+def test_version_changes_on_every_edit() -> None:
+    canvas = make_canvas()
+    versions = [canvas.version]
+    canvas.add_point((0, 0))
+    versions.append(canvas.version)
+    canvas.pen_up()
+    versions.append(canvas.version)  # pen up alone is not an edit
+    canvas.undo()
+    versions.append(canvas.version)
+    canvas.clear()
+    versions.append(canvas.version)
+    assert versions[1] > versions[0]
+    assert versions[2] == versions[1]
+    assert versions[4] > versions[3] > versions[2]
+
+
+def test_each_stroke_keeps_its_own_style() -> None:
+    canvas = make_canvas()
+    canvas.set_style(color=(0, 0, 255), thickness=3)
+    canvas.add_point((10, 10))
+    canvas.add_point((40, 10))
+    canvas.pen_up()
+    canvas.set_style(color=(255, 0, 0))
+    canvas.add_point((10, 60))
+    canvas.add_point((40, 60))
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    canvas.render(frame)
+    assert tuple(frame[10, 25]) == (0, 0, 255)
+    assert tuple(frame[60, 25]) == (255, 0, 0)
+    assert canvas.style.thickness == 3
+
+
+def test_style_does_not_change_points_or_preprocessing() -> None:
+    plain, styled = make_canvas(), make_canvas()
+    styled.set_style(color=(0, 255, 0), thickness=20)
+    for canvas in (plain, styled):
+        for point in [(0, 0), (50, 80), (100, 0)]:
+            canvas.add_point(point)
+    assert plain.strokes == styled.strokes
+    a, b = preprocess_strokes(plain.strokes), preprocess_strokes(styled.strokes)
+    assert a is not None and b is not None
+    assert bool((a == b).all())

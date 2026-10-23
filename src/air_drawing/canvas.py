@@ -1,6 +1,7 @@
 """Stroke storage, exponential smoothing and rendering of the air drawing."""
 
 import math
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -38,8 +39,23 @@ class PointSmoother:
         self._state = None
 
 
+Color = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class StrokeStyle:
+    """Display-only look of a stroke; never used for recognition."""
+
+    color: Color = config.CANVAS_STROKE_COLOR
+    thickness: int = config.CANVAS_STROKE_THICKNESS
+
+
 class Canvas:
-    """Holds strokes drawn with the fingertip and renders them on frames."""
+    """Holds strokes drawn with the fingertip and renders them on frames.
+
+    Each stroke keeps its own display style, but `strokes` returns only the raw
+    points, so pen colour and thickness never affect preprocessing.
+    """
 
     def __init__(
         self,
@@ -50,7 +66,10 @@ class Canvas:
         self._smoother = smoother or PointSmoother()
         self._min_distance = min_distance
         self._strokes: list[Stroke] = []
+        self._styles: list[StrokeStyle] = []
         self._drawing = False
+        self.style = StrokeStyle()
+        self.version = 0  # bumped on every change; identifies "the same drawing"
 
     @property
     def strokes(self) -> list[Stroke]:
@@ -67,17 +86,26 @@ class Canvas:
         """True while a stroke is in progress."""
         return self._drawing
 
+    def set_style(self, color: Color | None = None, thickness: int | None = None) -> None:
+        """Change the pen used for the next strokes (existing strokes keep theirs)."""
+        self.style = StrokeStyle(
+            color=color if color is not None else self.style.color,
+            thickness=thickness if thickness is not None else self.style.thickness,
+        )
+
     def add_point(self, point: Point) -> None:
         """Add a fingertip point, starting a new stroke if the pen was up."""
         if not self._drawing:
             self._smoother.reset()
             self._strokes.append([])
+            self._styles.append(self.style)
             self._drawing = True
         smoothed = self._smoother.update(point)
         stroke = self._strokes[-1]
         if stroke and math.dist(stroke[-1], smoothed) < self._min_distance:
             return
         stroke.append(smoothed)
+        self.version += 1
 
     def pen_up(self) -> None:
         """End the current stroke."""
@@ -85,20 +113,42 @@ class Canvas:
         self._smoother.reset()
         if self._strokes and not self._strokes[-1]:
             self._strokes.pop()
+            self._styles.pop()
+
+    def undo(self) -> bool:
+        """Remove the last stroke; return False if there was nothing to remove."""
+        self.pen_up()
+        if not self._strokes:
+            return False
+        self._strokes.pop()
+        self._styles.pop()
+        self.version += 1
+        return True
 
     def clear(self) -> None:
         """Remove all strokes."""
         self._strokes.clear()
+        self._styles.clear()
         self.pen_up()
+        self.version += 1
 
     def render(
         self,
         frame: np.ndarray,
-        color: tuple[int, int, int] = config.CANVAS_STROKE_COLOR,
-        thickness: int = config.CANVAS_STROKE_THICKNESS,
+        color: Color | None = None,
+        thickness: int | None = None,
     ) -> np.ndarray:
-        """Draw all strokes onto `frame` in place and return it."""
-        draw_strokes(frame, self._strokes, color, thickness)
+        """Draw all strokes onto `frame` in place and return it.
+
+        Each stroke uses its own style unless `color` / `thickness` override it.
+        """
+        for stroke, style in zip(self._strokes, self._styles, strict=True):
+            draw_strokes(
+                frame,
+                [stroke],
+                color if color is not None else style.color,
+                thickness if thickness is not None else style.thickness,
+            )
         return frame
 
 
