@@ -107,8 +107,8 @@ A gesture must be held for ~5 consecutive frames before it is applied.
 ### Toolbar
 
 The toolbar at the top of the window has rounded buttons **Clear**, **Predict**,
-**Undo** (remove the last stroke), **Mute/Unmute** and **Quit**, a palette of 8 pen
-colours and 3 pen thicknesses. Each button works two ways:
+**Undo** (remove the last stroke), **Mute/Unmute**, **Quit** and **Shape / Text**, a
+palette of 8 pen colours and 3 pen thicknesses. Each button works two ways:
 
 - **Mouse:** left-click it.
 - **Air click:** hold your fingertip over it for ~1 second. A progress ring fills around
@@ -126,20 +126,42 @@ they do not affect accuracy.
 | `p` | Predict                |
 | `u` | Undo last stroke       |
 | `m` | Mute / unmute voice    |
+| `t` | Shape / Text mode      |
 | `q` | Quit                   |
+
+### Shape and Text mode
+
+Press `t` or the **Shape / Text** button to switch. A badge (top right) shows the mode;
+the button turns purple in Text mode.
+
+- **Shape mode** (default): the CNN recognises one of the 15 shapes; below
+  `CONFIDENCE_THRESHOLD` the drawing goes to Gemini as a fallback.
+- **Text mode:** write letters, digits or words, then predict (fist, `p` or the
+  **Predict** button). The CNN is skipped and Gemini reads the handwriting directly. The
+  card shows the text in large letters with "via Gemini" and Gemini's confidence. Text
+  mode needs `GEMINI_API_KEY` and `GEMINI_MODEL`; without them the card shows
+  "Text mode needs Gemini" and the app keeps running.
+
+Tip: lift the pen (index + middle finger) between letters and words. The window is
+mirrored, so your writing reads the right way round.
 
 ### On screen
 
 - **Prediction card** (top left): the top-1 label in large text, the CNN top-3 as coloured
   confidence bars, and "via CNN" or "via Gemini". If Gemini answered, its label is the
-  large title.
-- **Mode badge** (top right): Draw, Pen up or Idle, plus a "Muted" badge when voice is off.
+  large title. In Text mode the recognised text is the title (long text is shrunk, then
+  shortened with "...").
+- **Badges** (top right): Draw, Pen up or Idle; Shape mode or Text mode; and "Muted"
+  when voice is off.
 
 ### Voice
 
-After every prediction the app says the result, e.g. *"I think it's a triangle"*, or
-the Gemini label if Gemini answered. It speaks once per drawing: predicting the same
-drawing again stays silent. Voice settings (`VOICE_ENABLED`, `VOICE_RATE`,
+After every prediction the app says the result. In Shape mode it picks a phrase at
+random from `SHAPE_PHRASES` in `config.py` (*"That's a triangle"*, *"Looks like an
+apple"*, *"I think it's a cat"*, *"star!"*), never the same phrase twice in a row, and
+uses the Gemini label if Gemini answered. Unknown drawings get *"I'm not sure what that
+is"*. In Text mode it says *"You wrote hello"*. It speaks once per drawing: predicting
+the same drawing again stays silent. Voice settings (`VOICE_ENABLED`, `VOICE_RATE`,
 `VOICE_VOLUME`) are in `src/air_drawing/config.py`. Speech is offline (`pyttsx3`,
 SAPI5 on Windows) and runs on a background thread, so the video never pauses.
 
@@ -168,7 +190,7 @@ src/air_drawing/
   preprocess.py             strokes -> 28x28 Quick, Draw! tensor
   model.py                  CNN
   classifier.py             loads weights, top-3 predictions
-  llm_fallback.py           Gemini fallback (background thread)
+  llm_fallback.py           Gemini: shape fallback + handwriting reading (background thread)
   speech.py                 text-to-speech queue (pyttsx3, background thread)
   ui.py                     toolbar, air click, prediction card, mode badge
   app.py                    main loop and HUD
@@ -216,6 +238,19 @@ data/samples/               demo drawings
   uniformly for narrower cameras, so all buttons always fit.
 - **Air click fires once.** After a dwell click the fingertip has to leave the button
   before it can click it again, so holding still does not repeat the click.
+- **Separate image for handwriting.** The shape image is a 256×256 square, which would
+  squash a word into a thin strip with blobby letters. Text mode renders a separate
+  image: aspect ratio kept, 1024 px on the long side, and a fixed 8 px stroke in output
+  pixels (independent of the on-screen pen thickness), so letters stay readable whether
+  they were written large or small.
+- **One Gemini client, two prompts.** `GeminiFallback` shares the request and error
+  handling between shape classification (`submit`) and text reading (`submit_text`).
+  Both run on the same background thread.
+- **Speech de-duplication happens before a phrase is chosen.** With random phrases the
+  sentence changes every time, so the app remembers the last (drawing version, mode,
+  result) it spoke and stays silent if nothing changed.
+- **Mode button placed after Quit.** It sits at the end of the action buttons, so
+  existing button positions and tests did not change.
 - **LLM tests live in `tests/test_classifier.py`.** The file list has no separate test
   file for `llm_fallback.py`, and the fallback is part of classification.
 
@@ -234,4 +269,9 @@ data/samples/               demo drawings
   rendering speech to WAV files from a background thread; audible playback and the
   live toolbar were not tested with a real webcam/speakers. If no speech engine is
   available, the app logs a warning and keeps running.
+- **Non-ASCII text needs OpenCV 5.** OpenCV 5 (installed here) draws accented,
+  Cyrillic and Chinese text on the card. With OpenCV 4.x, which `requirements.txt`
+  still allows, those characters show as "?" (the spoken sentence is unaffected).
+- **Text mode reliability depends on Gemini.** Air-written text is shaky; short words in
+  block capitals work best.
 - **Demo GIF** is still a placeholder.

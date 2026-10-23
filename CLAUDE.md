@@ -53,11 +53,12 @@ air-drawing/
 │       ├── preprocess.py       # Canvas -> 28x28 tensor in Quick, Draw! format
 │       ├── model.py            # CNN architecture
 │       ├── classifier.py       # Loads weights, returns top-3 predictions
-│       ├── llm_fallback.py     # Sends drawing image to Gemini
+│       ├── llm_fallback.py     # Gemini: shape fallback + handwriting reading
 │       ├── speech.py           # Speaks predictions (pyttsx3, background queue)
 │       ├── ui.py               # Toolbar, air-click dwell, prediction card, badges
 │       └── app.py              # Main loop tying everything together
 └── tests/
+    ├── test_app.py             # Mode toggle + text-mode flow (fakes only)
     ├── test_preprocess.py
     ├── test_gestures.py
     ├── test_canvas.py
@@ -91,6 +92,14 @@ Defined only in `config.py`. Everything else imports it from there.
   Pen colour/thickness are display-only; preprocessing uses the raw stroke points.
 - Prediction card (large top-1, top-3 confidence bars, source) and a coloured mode badge
   (Draw / Pen up / Idle). Extra keys: `u` undo, `m` mute.
+- Shape / Text mode: toggle with `t` or the toolbar button "Shape / Text"; a badge shows
+  the mode. Shape mode = CNN first, Gemini below threshold. Text mode skips the CNN and
+  sends a readable black-on-white image (aspect ratio kept, fixed stroke width) to Gemini,
+  which returns JSON `{"text", "confidence"}`; the card shows the text large "via Gemini".
+  Without Gemini show "Text mode needs Gemini" (never crash).
+- Speech phrases: shape mode picks randomly from `SHAPE_PHRASES` in `config.py`, never the
+  same phrase twice in a row (keep a/an and the "I'm not sure" phrase for "other");
+  text mode says "You wrote {text}".
 
 ## 6. Preprocessing (critical)
 Quick, Draw! bitmaps are 28x28, black background (0), white strokes (255).
