@@ -62,6 +62,7 @@ KEY_PREDICT: str = "p"
 KEY_QUIT: str = "q"
 KEY_MUTE: str = "m"
 KEY_UNDO: str = "u"
+KEY_TEXT_MODE: str = "t"
 
 # --- Hand tracking -----------------------------------------------------------
 NUM_HANDS: int = 1
@@ -160,7 +161,15 @@ VOICE_RATE: int = 170  # words per minute
 VOICE_VOLUME: float = 0.9  # 0.0 - 1.0
 SPEECH_QUEUE_SIZE: int = 4  # newest sentences win when the queue is full
 SPEECH_JOIN_TIMEOUT_S: float = 2.0
-SPEECH_TEMPLATE: str = "I think it's {article} {label}"
+SPEECH_TEMPLATE: str = "I think it's {article} {label}"  # default for make_sentence()
+# Shape mode picks one at random, never the same one twice in a row.
+SHAPE_PHRASES: tuple[str, ...] = (
+    "That's {article} {label}",
+    "Looks like {article} {label}",
+    "I think it's {article} {label}",
+    "{label}!",
+)
+TEXT_PHRASE: str = "You wrote {text}"
 SPEECH_UNKNOWN: str = "I'm not sure what that is"
 VOWELS: str = "aeiou"
 
@@ -188,6 +197,8 @@ BUTTON_COLORS: dict[str, tuple[int, int, int]] = {  # BGR
     "undo": (0, 160, 255),
     "mute": (200, 120, 60),
     "quit": (110, 110, 110),
+    "mode": (160, 140, 20),  # shape mode
+    "mode_text": (170, 60, 150),  # text mode
 }
 SWATCH_SIZE: int = 44
 THICKNESS_BUTTON_WIDTH: int = 56
@@ -243,6 +254,20 @@ BADGE_COLORS: dict[str, tuple[int, int, int]] = {  # BGR
     "Idle": (120, 120, 120),
 }
 MUTED_BADGE_COLOR: tuple[int, int, int] = (60, 60, 200)
+RECOGNITION_BADGE_COLORS: dict[str, tuple[int, int, int]] = {  # BGR
+    "Shape": (160, 140, 20),
+    "Text": (170, 60, 150),
+}
+MODE_BUTTON_WIDTH: int = 150
+
+# --- Text mode (Gemini reads handwriting) ------------------------------------
+# Aspect ratio is kept; the stroke width is fixed in output pixels so letters stay
+# readable no matter how large or small the word was written.
+TEXT_IMAGE_LONG_SIDE: int = 1024
+TEXT_IMAGE_PADDING: int = 48
+TEXT_STROKE_THICKNESS: int = 8
+CARD_MAX_TITLE_CHARS: int = 40  # longer recognised text is shortened with "..."
+CARD_MIN_TITLE_SCALE: float = 0.6
 
 
 def get_confidence_threshold() -> float:
