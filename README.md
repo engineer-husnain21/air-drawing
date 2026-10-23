@@ -93,18 +93,55 @@ python main.py
 
 ## Controls
 
+### Gestures
+
 A gesture must be held for ~5 consecutive frames before it is applied.
 
-| Gesture                     | Action           | Key |
-| --------------------------- | ---------------- | --- |
-| Only index finger up        | Draw             |     |
-| Index + middle finger up    | Pen up (move)    |     |
-| All 5 fingers up (open hand)| Clear canvas     | `c` |
-| Fist                        | Predict          | `p` |
-|                             | Quit             | `q` |
+| Gesture                      | Action        |
+| ---------------------------- | ------------- |
+| Only index finger up         | Draw          |
+| Index + middle finger up     | Pen up (move) |
+| All 5 fingers up (open hand) | Clear canvas  |
+| Fist                         | Predict       |
 
-The screen shows the hand landmarks, the current mode, the top-3 predictions with
-percentages and whether the answer came "via CNN" or "via Gemini".
+### Toolbar
+
+The toolbar at the top of the window has rounded buttons **Clear**, **Predict**,
+**Undo** (remove the last stroke), **Mute/Unmute** and **Quit**, a palette of 8 pen
+colours and 3 pen thicknesses. Each button works two ways:
+
+- **Mouse:** left-click it.
+- **Air click:** hold your fingertip over it for ~1 second. A progress ring fills around
+  the fingertip; the click fires when it is full. Move off the button to click it again.
+
+Nothing is drawn while the fingertip is over the toolbar. Pen colour and thickness only
+change how strokes look on screen. Recognition always uses the raw stroke points, so
+they do not affect accuracy.
+
+### Keyboard
+
+| Key | Action                 |
+| --- | ---------------------- |
+| `c` | Clear canvas           |
+| `p` | Predict                |
+| `u` | Undo last stroke       |
+| `m` | Mute / unmute voice    |
+| `q` | Quit                   |
+
+### On screen
+
+- **Prediction card** (top left): the top-1 label in large text, the CNN top-3 as coloured
+  confidence bars, and "via CNN" or "via Gemini". If Gemini answered, its label is the
+  large title.
+- **Mode badge** (top right): Draw, Pen up or Idle, plus a "Muted" badge when voice is off.
+
+### Voice
+
+After every prediction the app says the result, e.g. *"I think it's a triangle"*, or
+the Gemini label if Gemini answered. It speaks once per drawing: predicting the same
+drawing again stays silent. Voice settings (`VOICE_ENABLED`, `VOICE_RATE`,
+`VOICE_VOLUME`) are in `src/air_drawing/config.py`. Speech is offline (`pyttsx3`,
+SAPI5 on Windows) and runs on a background thread, so the video never pauses.
 
 ## Development
 
@@ -132,6 +169,8 @@ src/air_drawing/
   model.py                  CNN
   classifier.py             loads weights, top-3 predictions
   llm_fallback.py           Gemini fallback (background thread)
+  speech.py                 text-to-speech queue (pyttsx3, background thread)
+  ui.py                     toolbar, air click, prediction card, mode badge
   app.py                    main loop and HUD
 tests/                      pytest suite
 data/samples/               demo drawings
@@ -162,6 +201,21 @@ data/samples/               demo drawings
   is in flight discards the old answer.
 - **Hand model loaded from memory.** `hand_landmarker.task` is passed to MediaPipe as
   bytes, which avoids MediaPipe path problems on Windows (spaces, non-ASCII).
+- **One pyttsx3 engine per sentence.** On Windows, reusing a pyttsx3 engine makes the
+  second `runAndWait()` hang (checked with pyttsx3 2.99). The speech thread therefore
+  creates a fresh engine for each sentence (~0.2–0.6 s, off the video thread). The queue
+  holds at most 4 sentences; when it is full the oldest is dropped.
+- **"Same drawing" = canvas version.** The canvas bumps a version number on every
+  added point, undo and clear. Speech skips a sentence it already spoke for the same
+  version, so predicting twice stays quiet but a new answer (e.g. from Gemini) is spoken.
+  When the CNN is unsure and Gemini is asked, the app waits for Gemini (or its failure)
+  and speaks only once.
+- **Display-only pen styles.** Each stroke stores its own colour and thickness next to
+  its points; `Canvas.strokes` still returns only the points, so preprocessing is unchanged.
+- **Scaled toolbar.** The toolbar is laid out for a 1280 px wide frame and scaled down
+  uniformly for narrower cameras, so all buttons always fit.
+- **Air click fires once.** After a dwell click the fingertip has to leave the button
+  before it can click it again, so holding still does not repeat the click.
 - **LLM tests live in `tests/test_classifier.py`.** The file list has no separate test
   file for `llm_fallback.py`, and the fallback is part of classification.
 
@@ -176,4 +230,8 @@ data/samples/               demo drawings
 - **Two OpenCV packages.** `mediapipe` depends on `opencv-contrib-python`, which gets
   installed next to `opencv-python`. Both provide `cv2` and currently work together; if
   `import cv2` ever breaks, uninstall both and reinstall only `opencv-contrib-python`.
+- **Voice output was checked silently.** pyttsx3 was verified on this machine by
+  rendering speech to WAV files from a background thread; audible playback and the
+  live toolbar were not tested with a real webcam/speakers. If no speech engine is
+  available, the app logs a warning and keeps running.
 - **Demo GIF** is still a placeholder.
