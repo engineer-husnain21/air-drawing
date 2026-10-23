@@ -108,8 +108,8 @@ CANVAS_STROKE_COLOR: tuple[int, int, int] = (255, 0, 255)  # BGR
 # --- Preprocessing (Quick, Draw! format) -------------------------------------
 IMAGE_SIZE: int = 28
 RENDER_SIZE: int = 256  # draw at high resolution first, then downsample
-RENDER_PADDING_RATIO: float = 0.08  # padding on each side, relative to RENDER_SIZE
-RENDER_STROKE_THICKNESS: int = 14  # at RENDER_SIZE; ~1.5 px after resizing to 28
+RENDER_PADDING_RATIO: float = 0.1  # padding on each side; matches Quick, Draw! framing
+RENDER_STROKE_THICKNESS: int = 13  # at RENDER_SIZE; matches Quick, Draw! ink density
 PIXEL_MAX: float = 255.0
 LLM_IMAGE_SIZE: int = 256
 
