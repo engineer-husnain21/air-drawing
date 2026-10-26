@@ -1,4 +1,5 @@
 # Tool configuration only (ruff + pytest). The app is not packaged.
+# pytest puts src/ and scripts/ on the path (tests import train.py directly).
 [tool.ruff]
 line-length = 100
 target-version = "py312"
@@ -7,5 +8,5 @@ target-version = "py312"
 select = ["E", "F", "W", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "scripts"]
 testpaths = ["tests"]
