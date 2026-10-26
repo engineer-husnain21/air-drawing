@@ -2,12 +2,14 @@
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
 import torch
+from test_gestures import make_hand
 
 from air_drawing import config
 from air_drawing.app import (
@@ -18,8 +20,10 @@ from air_drawing.app import (
     AirDrawingApp,
 )
 from air_drawing.classifier import Prediction
+from air_drawing.hand_tracker import HandResult
 from air_drawing.llm_fallback import TEXT_PROMPT, GeminiFallback
 from air_drawing.ui import (
+    ACTION_CLEAR,
     ACTION_MODE,
     RECOGNITION_SHAPE,
     RECOGNITION_TEXT,
@@ -320,3 +324,185 @@ def test_process_frame_renders_in_both_modes() -> None:
     assert app.process_frame(frame).shape == frame.shape
     app.toggle_recognition()
     assert app.process_frame(frame).shape == frame.shape
+
+
+# --- Debug view, clear hold and Gemini hints -----------------------------------------
+
+
+class RecordingClassifier(FakeClassifier):
+    """Also keeps the last tensor it was given."""
+
+    def __init__(self, label: str = "circle", confidence: float = 0.95) -> None:
+        super().__init__(label, confidence)
+        self.last_image: torch.Tensor | None = None
+
+    def predict(self, image: torch.Tensor) -> list[Prediction]:
+        self.last_image = image
+        return super().predict(image)
+
+
+def debug_app(
+    tmp_path: Path,
+    clock: Callable[[], float] = time.monotonic,
+    classifier: FakeClassifier | None = None,
+    client: FakeGeminiClient | None = None,
+    threshold: float = 0.6,
+) -> AirDrawingApp:
+    fallback = (
+        GeminiFallback(model="m", client=client)
+        if client is not None
+        else GeminiFallback(api_key="", model="")
+    )
+    return AirDrawingApp(
+        FakeTracker(),  # type: ignore[arg-type]
+        classifier or RecordingClassifier(),  # type: ignore[arg-type]
+        fallback,
+        threshold=threshold,
+        speaker=FakeSpeaker(),  # type: ignore[arg-type]
+        clock=clock,
+        debug_dir=tmp_path,
+    )
+
+
+def test_key_d_toggles_debug() -> None:
+    app, _, _ = make_app()
+    assert not app.debug
+    assert app.handle_key(ord(config.KEY_DEBUG))
+    assert app.debug
+    app.handle_key(ord(config.KEY_DEBUG))
+    assert not app.debug
+
+
+def test_debug_saves_exact_cnn_input_on_predict(tmp_path: Path) -> None:
+    classifier = RecordingClassifier()
+    app = debug_app(tmp_path, classifier=classifier)
+    app.toggle_debug()
+    draw_word(app)
+    app.predict()
+    files = list(tmp_path.glob("debug_*.png"))
+    assert files == [app.last_debug_path]
+    saved = cv2.imdecode(np.frombuffer(files[0].read_bytes(), np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert app.debug_bitmap is not None and np.array_equal(saved, app.debug_bitmap)
+    assert classifier.last_image is not None
+    sent = (classifier.last_image[0, 0] * config.PIXEL_MAX).round().byte().numpy()
+    assert np.array_equal(sent, saved)  # the saved file is exactly what the CNN received
+
+
+def test_debug_saves_one_file_per_prediction(tmp_path: Path) -> None:
+    app = debug_app(tmp_path)
+    app.toggle_debug()
+    draw_word(app)
+    app.predict()
+    app.canvas.add_point((500, 500))
+    app.predict()
+    assert len(list(tmp_path.glob("debug_*.png"))) == 2
+
+
+def test_no_debug_files_when_debug_is_off(tmp_path: Path) -> None:
+    app = debug_app(tmp_path)
+    draw_word(app)
+    app.predict()
+    assert list(tmp_path.iterdir()) == []
+    assert app.debug_bitmap is None
+
+
+def test_debug_save_failure_does_not_crash(tmp_path: Path) -> None:
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("x", encoding="utf-8")
+    app = debug_app(blocker)  # saving into a file path fails
+    app.toggle_debug()
+    draw_word(app)
+    app.predict()
+    assert app.state.cnn  # prediction still happened
+    assert app.debug_bitmap is not None
+
+
+def test_debug_view_is_drawn(tmp_path: Path) -> None:
+    app = debug_app(tmp_path)
+    blank = np.zeros((720, 1280, 3), dtype=np.uint8)
+    off = app.process_frame(blank.copy())
+    app.toggle_debug()
+    on = app.process_frame(blank.copy())
+    corner = (slice(400, 700), slice(1050, 1280))
+    assert on[corner].sum() > off[corner].sum()
+
+
+def hand_frames(app: AirDrawingApp, hand: HandResult, count: int, now: list[float]) -> None:
+    for _ in range(count):
+        now[0] += FRAME_DT
+        app.update(hand)
+
+
+FRAME_DT = 1 / 30
+
+
+def open_hand() -> HandResult:
+    return HandResult(make_hand(True, True, True, True, True) + 300, "Right")
+
+
+def index_hand(x: float = 0.0) -> HandResult:
+    return HandResult(make_hand(index=True) + np.array([300 + x, 300.0]), "Right")
+
+
+def test_open_hand_must_be_held_before_clearing(tmp_path: Path) -> None:
+    now = [0.0]
+    app = debug_app(tmp_path, clock=lambda: now[0])
+    for i in range(20):
+        hand_frames(app, index_hand(i * 5), 1, now)
+    assert not app.canvas.is_empty
+    hold_frames = int(config.CLEAR_HOLD_SECONDS / FRAME_DT)
+    hand_frames(app, open_hand(), hold_frames // 2, now)
+    assert not app.canvas.is_empty
+    assert 0.0 < app.clear_progress < 1.0  # ring is filling
+    hand_frames(app, open_hand(), hold_frames, now)
+    assert app.canvas.is_empty
+    assert app.clear_progress == 0.0
+
+
+def test_brief_open_hand_while_drawing_does_not_clear(tmp_path: Path) -> None:
+    now = [0.0]
+    app = debug_app(tmp_path, clock=lambda: now[0])
+    for i in range(20):
+        hand_frames(app, index_hand(i * 5), 1, now)
+    hand_frames(app, open_hand(), int(0.5 / FRAME_DT), now)  # half a second
+    hand_frames(app, index_hand(200), 10, now)
+    hand_frames(app, open_hand(), int(0.5 / FRAME_DT), now)  # timer restarted
+    assert not app.canvas.is_empty
+
+
+def test_clear_key_and_button_still_clear_immediately(tmp_path: Path) -> None:
+    app = debug_app(tmp_path)
+    draw_word(app)
+    app.handle_key(ord(config.KEY_CLEAR))
+    assert app.canvas.is_empty
+    draw_word(app)
+    clear = next(b for b in Toolbar(config.UI_DESIGN_WIDTH).buttons if b.action == ACTION_CLEAR)
+    app.press(clear)
+    assert app.canvas.is_empty
+
+
+def test_low_confidence_sends_cnn_top3_as_hints(tmp_path: Path) -> None:
+    client = FakeGeminiClient({"label": "bicycle", "confidence": 0.8})
+    app = debug_app(
+        tmp_path,
+        classifier=RecordingClassifier("car", 0.55),
+        client=client,
+        threshold=config.DEFAULT_CONFIDENCE_THRESHOLD,
+    )
+    try:
+        draw_word(app)
+        app.predict()
+        wait_for_gemini(app)
+        prompt = client.requests[0]["contents"][1]
+        assert "car (55%), sun (45%)" in prompt
+        assert all(c in prompt for c in config.CATEGORIES)
+        assert app.state.card().title == "bicycle"  # Gemini chose a non-hinted category
+        assert app.state.source == SOURCE_GEMINI
+    finally:
+        app._fallback.close()  # type: ignore[union-attr]
+
+
+def test_default_threshold_is_raised() -> None:
+    assert config.DEFAULT_CONFIDENCE_THRESHOLD == 0.85
+    example = (config.PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "CONFIDENCE_THRESHOLD=0.85" in example.splitlines()

@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -12,10 +13,16 @@ import numpy as np
 from air_drawing import config
 from air_drawing.canvas import Canvas
 from air_drawing.classifier import Classifier, Prediction
-from air_drawing.gestures import Gesture, GestureDebouncer, classify_gesture
+from air_drawing.gestures import Gesture, GestureDebouncer, HoldTimer, classify_gesture
 from air_drawing.hand_tracker import HandResult, HandTracker, draw_landmarks
 from air_drawing.llm_fallback import GeminiFallback, LLMResult, TextResult
-from air_drawing.preprocess import preprocess_strokes, render_for_llm, render_text_for_llm
+from air_drawing.preprocess import (
+    bitmaps_to_tensor,
+    render_for_llm,
+    render_text_for_llm,
+    save_debug_bitmap,
+    strokes_to_bitmap,
+)
 from air_drawing.speech import PhrasePicker, Speaker, text_sentence
 from air_drawing.ui import (
     ACTION_CLEAR,
@@ -38,6 +45,7 @@ from air_drawing.ui import (
     DwellClicker,
     Toolbar,
     ToolbarState,
+    draw_debug_view,
     draw_mode_badges,
     draw_prediction_card,
     draw_progress_ring,
@@ -58,7 +66,8 @@ CONTROLS_HINT = (
     "Index: draw | Index+Middle: pen up | Open hand: clear | Fist: predict | "
     "Hover a button 1s to click | "
     f"Keys: {config.KEY_CLEAR} clear, {config.KEY_PREDICT} predict, {config.KEY_UNDO} undo, "
-    f"{config.KEY_MUTE} mute, {config.KEY_TEXT_MODE} shape/text, {config.KEY_QUIT} quit"
+    f"{config.KEY_MUTE} mute, {config.KEY_TEXT_MODE} shape/text, {config.KEY_DEBUG} debug, "
+    f"{config.KEY_QUIT} quit"
 )
 
 
@@ -99,6 +108,7 @@ class AirDrawingApp:
         threshold: float = config.DEFAULT_CONFIDENCE_THRESHOLD,
         speaker: Speaker | None = None,
         clock: Callable[[], float] = time.monotonic,
+        debug_dir: Path = config.DEBUG_DIR,
     ) -> None:
         """Store collaborators; classifier/fallback/speaker may be None if unavailable."""
         self._tracker = tracker
@@ -109,6 +119,12 @@ class AirDrawingApp:
         self.canvas = Canvas()
         self._debouncer = GestureDebouncer()
         self._dwell = DwellClicker(clock=clock)
+        self._clear_hold = HoldTimer(clock=clock)
+        self._palm: tuple[int, int] | None = None
+        self.debug = False
+        self._debug_dir = debug_dir
+        self.debug_bitmap: np.ndarray | None = None  # last exact CNN input (uint8 28x28)
+        self.last_debug_path: Path | None = None
         self.state = PredictionState()
         self._pending: Future[LLMResult | None] | Future[TextResult | None] | None = None
         self._pending_text = False  # True when the pending call reads handwriting
@@ -145,6 +161,11 @@ class AirDrawingApp:
         if self.text_mode and (self._fallback is None or not self._fallback.available):
             self.state.message = MSG_TEXT_NEEDS_GEMINI
         logger.info("Recognition mode: %s", self.recognition)
+
+    def toggle_debug(self) -> None:
+        """Show/hide the CNN input image; while on, each prediction also saves it."""
+        self.debug = not self.debug
+        logger.info("Debug view %s", "on" if self.debug else "off")
 
     def clear(self) -> None:
         """Erase the drawing and the last prediction."""
@@ -204,10 +225,13 @@ class AirDrawingApp:
         self.canvas.pen_up()
         self._pending = None
         strokes = self.canvas.strokes
-        tensor = preprocess_strokes(strokes)
-        if tensor is None:
+        bitmap = strokes_to_bitmap(strokes)
+        if bitmap is None:
             self.state = PredictionState(message=MSG_NOTHING_DRAWN)
             return
+        if self.debug:
+            self._save_debug(bitmap)
+        tensor = bitmaps_to_tensor(bitmap)  # exactly the image shown in the debug view
         if self._classifier is None:
             self.state = PredictionState(message=MSG_NO_MODEL)
             return
@@ -224,7 +248,9 @@ class AirDrawingApp:
             self._speak(top.label)
             return
         # Speak only once Gemini has answered (or failed), so the user hears one label.
-        self._pending = self._fallback.submit(image)
+        # The CNN top-3 go along as hints; Gemini may still pick any category.
+        hints = [(p.label, p.confidence) for p in predictions]
+        self._pending = self._fallback.submit(image, hints)
         self._pending_text = False
         self.state.message = MSG_ASKING_LLM
 
@@ -291,6 +317,8 @@ class AirDrawingApp:
             self.toggle_mute()
         elif key == ord(config.KEY_TEXT_MODE):
             self.toggle_recognition()
+        elif key == ord(config.KEY_DEBUG):
+            self.toggle_debug()
         return not self.quit_requested
 
     def on_mouse(self, event: int, x: int, y: int, flags: int, param: object) -> None:
@@ -309,6 +337,7 @@ class AirDrawingApp:
         raw = classify_gesture(hand.landmarks if hand is not None else None)
         stable = self._debouncer.update(raw)
         self._fingertip = hand.pen if hand is not None else None
+        self._palm = _point(hand.landmarks[config.PALM_LANDMARK]) if hand is not None else None
         self.over_toolbar = bool(toolbar and hand and toolbar.contains(hand.pen))
         if self.over_toolbar and toolbar is not None and hand is not None:
             # Never draw over the toolbar; hovering a button long enough clicks it.
@@ -327,11 +356,12 @@ class AirDrawingApp:
                     self.canvas.add_point(hand.pen)
             else:
                 self.canvas.pen_up()
-        if self._debouncer.changed:
-            if stable == Gesture.CLEAR:
-                self.clear()
-            elif stable == Gesture.PREDICT:
-                self.predict()
+        # The open hand must be held for CLEAR_HOLD_SECONDS, so a brief open hand
+        # while drawing does not wipe the canvas.
+        if self._clear_hold.update(stable == Gesture.CLEAR and hand is not None):
+            self.clear()
+        if self._debouncer.changed and stable == Gesture.PREDICT:
+            self.predict()
         self.poll_llm()
         return stable
 
@@ -376,6 +406,17 @@ class AirDrawingApp:
         draw_mode_badges(frame, self.mode(gesture), self.muted, top, self.recognition)
         if self._fingertip is not None:
             draw_progress_ring(frame, self._fingertip, self._dwell.progress)
+        if self._palm is not None:
+            draw_progress_ring(
+                frame,
+                self._palm,
+                self._clear_hold.progress,
+                config.CLEAR_RING_COLOR,
+                config.CLEAR_RING_RADIUS,
+            )
+        if self.debug:
+            blank = np.zeros((config.IMAGE_SIZE, config.IMAGE_SIZE), dtype=np.uint8)
+            draw_debug_view(frame, self.debug_bitmap if self.debug_bitmap is not None else blank)
         bottom = frame.shape[0] - config.HUD_MARGIN
         _put_text(frame, CONTROLS_HINT, (config.HUD_MARGIN, bottom), config.HUD_TEXT_COLOR)
 
@@ -408,6 +449,21 @@ class AirDrawingApp:
             if self._speaker is not None:
                 self._speaker.close()
 
+    @property
+    def clear_progress(self) -> float:
+        """Progress (0..1) of the open-hand clear hold."""
+        return self._clear_hold.progress
+
+    def _save_debug(self, bitmap: np.ndarray) -> None:
+        """Keep the CNN input for the debug view and save it as debug_<time>.png."""
+        self.debug_bitmap = bitmap
+        try:
+            self.last_debug_path = save_debug_bitmap(bitmap, self._debug_dir)
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not save debug image: %s", exc)
+            return
+        logger.info("Saved CNN input to %s", self.last_debug_path)
+
     def _apply_pen(self) -> None:
         """Push the selected colour and thickness to the canvas."""
         self.canvas.set_style(
@@ -431,6 +487,11 @@ class AirDrawingApp:
             return
         self._last_spoken = key
         self._speaker.say(sentence or self._phrases.sentence(result), key=key)
+
+
+def _point(xy: np.ndarray) -> tuple[int, int]:
+    """Round a landmark to integer pixel coordinates."""
+    return int(round(float(xy[0]))), int(round(float(xy[1])))
 
 
 def _put_text(
