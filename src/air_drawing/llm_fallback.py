@@ -23,6 +23,11 @@ PROMPT_TEMPLATE = (
     'If none fits, use "{other}". '
     'Respond only with JSON: {{"label": "<one label>", "confidence": <number 0 to 1>}}.'
 )
+HINT_TEMPLATE = (
+    "A small classifier trained on doodles guessed: {hints}. These guesses are often wrong "
+    "for air drawings; use them only as hints and judge the image yourself. You may choose "
+    "any of the categories, not just these guesses. "
+)
 TEXT_PROMPT = (
     "This image shows handwriting written in the air with a finger, so the strokes are "
     "shaky and letters may touch. Read the handwritten text exactly as written (letters, "
@@ -52,9 +57,27 @@ class TextResult:
     confidence: float | None
 
 
-def build_prompt(categories: tuple[str, ...] | list[str]) -> str:
-    """Return the classification prompt for the given categories."""
-    return PROMPT_TEMPLATE.format(categories=", ".join(categories), other=config.OTHER_LABEL)
+Hint = tuple[str, float]  # (label, CNN confidence in [0, 1])
+
+
+def format_hints(hints: list[Hint]) -> str:
+    """Format CNN guesses as "car (45%), house (20%)"."""
+    return ", ".join(
+        f"{label} ({confidence * config.PERCENT:.{config.HINT_DECIMALS}f}%)"
+        for label, confidence in hints
+    )
+
+
+def build_prompt(categories: tuple[str, ...] | list[str], hints: list[Hint] | None = None) -> str:
+    """Return the classification prompt; optional CNN top-k guesses are added as hints.
+
+    The full category list is always included, so Gemini can pick any category
+    (or "other"), not only the hinted ones.
+    """
+    prompt = PROMPT_TEMPLATE.format(categories=", ".join(categories), other=config.OTHER_LABEL)
+    if hints:
+        prompt = HINT_TEMPLATE.format(hints=format_hints(hints)) + prompt
+    return prompt
 
 
 def _load_json(text: str) -> dict[str, Any]:
@@ -136,11 +159,13 @@ class GeminiFallback:
         """True when an API key and a model name are configured."""
         return bool(self._model) and (self._client is not None or bool(self._api_key))
 
-    def classify(self, image: np.ndarray) -> LLMResult:
-        """Blocking shape classification; raises LLMUnavailableError on any failure."""
-        return parse_response(
-            self._generate(image, build_prompt(self._categories)), self._categories
-        )
+    def classify(self, image: np.ndarray, hints: list[Hint] | None = None) -> LLMResult:
+        """Blocking shape classification; raises LLMUnavailableError on any failure.
+
+        `hints` are the CNN's top guesses; Gemini may still choose any category.
+        """
+        prompt = build_prompt(self._categories, hints)
+        return parse_response(self._generate(image, prompt), self._categories)
 
     def read_text(self, image: np.ndarray) -> TextResult:
         """Blocking handwriting recognition; raises LLMUnavailableError on any failure."""
@@ -175,9 +200,11 @@ class GeminiFallback:
             raise LLMUnavailableError("Empty Gemini response")
         return text
 
-    def submit(self, image: np.ndarray) -> "Future[LLMResult | None]":
+    def submit(
+        self, image: np.ndarray, hints: list[Hint] | None = None
+    ) -> "Future[LLMResult | None]":
         """Classify in a background thread; the future yields None on failure."""
-        return self._executor.submit(self._safe_classify, image)
+        return self._executor.submit(self._safe_classify, image, hints)
 
     def submit_text(self, image: np.ndarray) -> "Future[TextResult | None]":
         """Read handwriting in a background thread; the future yields None on failure."""
@@ -187,10 +214,10 @@ class GeminiFallback:
         """Stop the background worker without waiting for pending calls."""
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def _safe_classify(self, image: np.ndarray) -> LLMResult | None:
+    def _safe_classify(self, image: np.ndarray, hints: list[Hint] | None) -> LLMResult | None:
         """Run classify(), logging and swallowing every error."""
         try:
-            result = self.classify(image)
+            result = self.classify(image, hints)
         except Exception as exc:
             logger.warning("LLM fallback unavailable: %s", exc)
             return None

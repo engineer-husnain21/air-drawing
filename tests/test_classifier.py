@@ -198,3 +198,32 @@ def test_submit_text_swallows_errors() -> None:
         assert fallback.submit_text(drawing()).result(timeout=5) is None
     finally:
         fallback.close()
+
+
+# --- CNN hints for Gemini -------------------------------------------------------------
+
+
+def test_prompt_with_hints_keeps_every_category() -> None:
+    prompt = build_prompt(config.CATEGORIES, [("car", 0.45), ("house", 0.2), ("tree", 0.1)])
+    assert "car (45%), house (20%), tree (10%)" in prompt
+    assert all(c in prompt for c in config.CATEGORIES)  # Gemini may choose any of them
+    assert config.OTHER_LABEL in prompt
+
+
+def test_prompt_without_hints_is_unchanged() -> None:
+    assert (
+        build_prompt(CATEGORIES) == build_prompt(CATEGORIES, None) == build_prompt(CATEGORIES, [])
+    )
+    assert "guessed" not in build_prompt(CATEGORIES)
+
+
+def test_classify_sends_hints_and_accepts_unhinted_label() -> None:
+    client = FakeClient('{"label": "sun", "confidence": 0.8}')
+    fallback = GeminiFallback(model="m", client=client, categories=tuple(CATEGORIES))
+    try:
+        result = fallback.submit(drawing(), [("circle", 0.5), ("star", 0.3)]).result(timeout=5)
+        assert result == LLMResult("sun", 0.8)  # not one of the hints, still accepted
+        prompt = client.models.calls[0]["contents"][1]
+        assert "circle (50%), star (30%)" in prompt
+    finally:
+        fallback.close()
