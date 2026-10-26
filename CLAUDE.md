@@ -34,11 +34,11 @@ air-drawing/
 ├── requirements-dev.txt
 ├── .env.example
 ├── .gitignore
-├── pyproject.toml              # Tool config only: ruff + pytest (src/ on path)
+├── pyproject.toml              # Tool config only: ruff + pytest (src/, scripts/ on path)
 ├── main.py                     # Entry point: runs the live app
 ├── data/
 │   ├── raw/                    # Quick, Draw! .npy files (gitignored)
-│   └── samples/                # A few demo PNG drawings (committed)
+│   └── samples/                # Demo PNG drawings (committed); debug_*.png gitignored
 ├── models/                     # hand_landmarker.task + cnn_quickdraw.pt (gitignored)
 ├── scripts/
 │   ├── download_data.py        # Downloads .npy files + hand_landmarker.task
@@ -64,6 +64,7 @@ air-drawing/
     ├── test_canvas.py
     ├── test_classifier.py
     ├── test_speech.py
+    ├── test_train.py           # Augmentation + train CLI
     └── test_ui.py
 ```
 
@@ -77,7 +78,8 @@ Defined only in `config.py`. Everything else imports it from there.
 - Gestures (same gesture for ~5 consecutive frames before acting = debounce):
   - Only index finger up → DRAW
   - Index + middle up → PEN UP
-  - All 5 fingers up → CLEAR
+  - All 5 fingers up → CLEAR (must be held `CLEAR_HOLD_SECONDS`, default 1 s,
+    with a red progress ring around the palm; `c` and the button clear at once)
   - Fist → PREDICT
 - Keyboard fallback: `c` clear, `p` predict, `q` quit.
 - Exponential smoothing on fingertip points.
@@ -97,6 +99,9 @@ Defined only in `config.py`. Everything else imports it from there.
   sends a readable black-on-white image (aspect ratio kept, fixed stroke width) to Gemini,
   which returns JSON `{"text", "confidence"}`; the card shows the text large "via Gemini".
   Without Gemini show "Text mode needs Gemini" (never crash).
+- Debug view: key `d` toggles it. Shows the exact 28x28 CNN input scaled up in the
+  bottom-right corner and saves it as `data/samples/debug_<time>.png` on each
+  prediction (gitignored).
 - Speech phrases: shape mode picks randomly from `SHAPE_PHRASES` in `config.py`, never the
   same phrase twice in a row (keep a/an and the "I'm not sure" phrase for "other");
   text mode says "You wrote {text}".
@@ -112,13 +117,16 @@ Empty canvas → skip prediction and show "Nothing drawn".
 - Small CNN: 2–3 conv blocks + dropout + linear head.
 - `download_data.py`: downloads each category's numpy bitmap `.npy` into `data/raw/`,
   and the MediaPipe `hand_landmarker.task` into `models/`. Skip files that already exist.
-- `train.py`: CLI args `--samples-per-class` (default 15000), `--epochs` (default 8),
-  `--categories` (default all). 80/20 split, log accuracy per epoch, save best weights
+- `train.py`: CLI args `--samples-per-class` (default 15000), `--epochs` (default 12),
+  `--categories` (default all), `--no-augment`. Augmentation (on by default, training
+  batches only) mimics air drawing: rotation ±15°, scale 0.8–1.1, shift, smooth
+  elastic jitter, random stroke thickness (dilate/erode). Batched tensor ops, CPU friendly. 80/20 split, log accuracy per epoch, save best weights
   to `models/cnn_quickdraw.pt`. Must run on CPU.
 
 ## 8. Gemini fallback
-- Only when top-1 confidence < `CONFIDENCE_THRESHOLD` (default 0.6, from `.env`).
+- Only when top-1 confidence < `CONFIDENCE_THRESHOLD` (default 0.85, from `.env`).
 - Ask Gemini to choose one label (from the categories, or "other") and return JSON.
+  Send the CNN top-3 as hints, but Gemini may choose any of the 15 categories.
 - Read `GEMINI_API_KEY` and `GEMINI_MODEL` from `.env`. Never hardcode keys or model names.
 - Run the call in a background thread so the webcam loop never freezes.
 - If the key is missing or the call fails, keep the CNN result and show

@@ -58,7 +58,7 @@ and `ruff`. For a smaller, CPU-only PyTorch, install torch first with
 | ---------------------- | -------------------------------------------------------- |
 | `GEMINI_API_KEY`       | Your key from <https://aistudio.google.com/apikey>.     |
 | `GEMINI_MODEL`         | Any Gemini model with vision, e.g. `gemini-2.5-flash`.   |
-| `CONFIDENCE_THRESHOLD` | Ask Gemini below this top-1 CNN confidence (default 0.6).|
+| `CONFIDENCE_THRESHOLD` | Ask Gemini below this top-1 CNN confidence (default 0.85).|
 
 The app works without a key: it keeps the CNN result and shows
 "LLM fallback unavailable".
@@ -76,7 +76,8 @@ Downloads each category's numpy bitmap file (~70–130 MB each, ~1.5 GB total) i
 ## Train
 
 ```bash
-python scripts/train.py                                   # 15,000 samples/class, 8 epochs, all categories
+python scripts/train.py                                   # 15,000 samples/class, 12 epochs, all categories
+python scripts/train.py --no-augment                      # without air-drawing augmentation
 python scripts/train.py --samples-per-class 5000 --epochs 4
 python scripts/train.py --categories circle triangle square --epochs 3
 ```
@@ -84,6 +85,15 @@ python scripts/train.py --categories circle triangle square --epochs 3
 Runs on CPU. Uses an 80/20 train/validation split, logs loss and accuracy per epoch
 and saves the best weights (with the category list) to `models/cnn_quickdraw.pt`.
 The full default run needs about 1 GB of RAM.
+
+**Augmentation (on by default).** Quick, Draw! doodles are drawn with a mouse or a
+finger on a screen; air drawings are shakier, tilted and differently sized. Each
+training batch is therefore randomly distorted: rotation (±15°), scale (0.8–1.1),
+shift, a smooth elastic jitter and thicker or thinner strokes (dilate/erode). Only
+training batches are augmented; validation uses the original images. It is done with
+batched tensor ops (~15 ms per 256-image batch), so an epoch takes roughly 1.5× as
+long as without it; expect around an hour for the default 12 epochs on a laptop CPU.
+Retrain after upgrading to get a model that copes better with air drawings.
 
 ## Run
 
@@ -101,7 +111,7 @@ A gesture must be held for ~5 consecutive frames before it is applied.
 | ---------------------------- | ------------- |
 | Only index finger up         | Draw          |
 | Index + middle finger up     | Pen up (move) |
-| All 5 fingers up (open hand) | Clear canvas  |
+| All 5 fingers up (open hand) | Clear canvas (hold ~1 s) |
 | Fist                         | Predict       |
 
 ### Toolbar
@@ -118,6 +128,11 @@ Nothing is drawn while the fingertip is over the toolbar. Pen colour and thickne
 change how strokes look on screen. Recognition always uses the raw stroke points, so
 they do not affect accuracy.
 
+**Clear needs a hold.** An open hand must stay open for `CLEAR_HOLD_SECONDS`
+(default 1 s, in `config.py`) before the canvas is cleared. A red ring fills around
+your palm while you hold; close the hand to cancel. The `c` key and the **Clear**
+button still clear immediately.
+
 ### Keyboard
 
 | Key | Action                 |
@@ -127,7 +142,16 @@ they do not affect accuracy.
 | `u` | Undo last stroke       |
 | `m` | Mute / unmute voice    |
 | `t` | Shape / Text mode      |
+| `d` | Debug view on / off    |
 | `q` | Quit                   |
+
+### Debug view
+
+Press `d` to see what the CNN sees. The exact 28×28 image that goes into the CNN is
+shown, scaled up, in the bottom-right corner, and every prediction saves it as
+`data/samples/debug_<time>.png` (these files are gitignored). If a drawing is
+misrecognised, compare this image with real Quick, Draw! examples of the category:
+parts that are cut off, merged or too thin are easy to spot.
 
 ### Shape and Text mode
 
@@ -135,7 +159,9 @@ Press `t` or the **Shape / Text** button to switch. A badge (top right) shows th
 the button turns purple in Text mode.
 
 - **Shape mode** (default): the CNN recognises one of the 15 shapes; below
-  `CONFIDENCE_THRESHOLD` the drawing goes to Gemini as a fallback.
+  `CONFIDENCE_THRESHOLD` (default 0.85) the drawing goes to Gemini as a fallback,
+  together with the CNN top-3 as hints. Gemini may still pick any of the 15
+  categories (or "other").
 - **Text mode:** write letters, digits or words, then predict (fist, `p` or the
   **Predict** button). The CNN is skipped and Gemini reads the handwriting directly. The
   card shows the text in large letters with "via Gemini" and Gemini's confidence. Text
@@ -238,6 +264,22 @@ data/samples/               demo drawings
   uniformly for narrower cameras, so all buttons always fit.
 - **Air click fires once.** After a dwell click the fingertip has to leave the button
   before it can click it again, so holding still does not repeat the click.
+- **Accuracy on real air drawings.** The CNN scores ~97 % on Quick, Draw! validation
+  data but much less on air drawings, which are shakier and differently sized and
+  tilted. Three changes address this gap: training-time augmentation that imitates
+  air drawing, a higher Gemini threshold (0.85, so Gemini decides more of the hard
+  cases), and CNN top-3 hints for Gemini. The hints are framed as possibly wrong and
+  the full category list is always sent, so Gemini is not limited to the CNN's guesses.
+- **Augmentation on batches, not files.** Distortions are applied on the fly to each
+  training batch with `affine_grid`/`grid_sample` and max-pooling (for dilate/erode),
+  so no extra data is stored and every epoch sees new variations. `tests/` imports
+  `train.py` directly, so `pyproject.toml` puts `scripts/` on the pytest path too.
+- **Clear hold uses the debounced gesture.** The 1 s timer starts once the open hand
+  is stable for the usual 5 frames, so single-frame flickers neither start nor reset
+  it. It fires once per hold.
+- **Debug image = CNN input, byte for byte.** The app renders the 28×28 bitmap once,
+  saves and shows that bitmap, and builds the CNN tensor from the same array, so the
+  debug file is exactly what the model saw (a test checks this).
 - **Separate image for handwriting.** The shape image is a 256×256 square, which would
   squash a word into a thin strip with blobby letters. Text mode renders a separate
   image: aspect ratio kept, 1024 px on the long side, and a fixed 8 px stroke in output
@@ -260,8 +302,13 @@ data/samples/               demo drawings
   tests and the full app loop was driven with synthetic hand landmarks, but the gesture
   thresholds (`FINGER_EXTENDED_RATIO`, `THUMB_EXTENDED_RATIO` in `config.py`) may need
   tuning for your camera and hand.
-- **Only a smoke model was trained** (2 categories, 500 samples, 1 epoch). Run the full
-  training before expecting good predictions.
+- **Retrain to benefit from augmentation.** An existing `models/cnn_quickdraw.pt` was
+  trained without it. Only a smoke run (2 categories, 500 samples, 1 epoch, saved
+  outside `models/`) was done to verify the new training code.
+- **An existing `.env` overrides the new threshold.** If your `.env` still says
+  `CONFIDENCE_THRESHOLD=0.6`, change it to `0.85` (or delete the line).
+- **A higher threshold means more Gemini calls** (cost/quota) and a short wait before
+  the final answer in shape mode.
 - **Two OpenCV packages.** `mediapipe` depends on `opencv-contrib-python`, which gets
   installed next to `opencv-python`. Both provide `cv2` and currently work together; if
   `import cv2` ever breaks, uninstall both and reinstall only `opencv-contrib-python`.
