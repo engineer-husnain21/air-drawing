@@ -36,6 +36,8 @@ air-drawing/
 ├── .gitignore
 ├── pyproject.toml              # Tool config only: ruff + pytest (src/, scripts/ on path)
 ├── main.py                     # Entry point: runs the live app
+├── docs/
+│   └── demo.gif                # Demo animation shown in README (added by the owner)
 ├── data/
 │   ├── raw/                    # Quick, Draw! .npy files (gitignored)
 │   └── samples/                # Demo PNG drawings (committed); debug_*.png gitignored
@@ -139,7 +141,7 @@ Empty canvas → skip prediction and show "Nothing drawn".
 4. model.py + download_data.py + train.py
 5. preprocess.py + classifier.py + live prediction + tests
 6. llm_fallback.py + integration into app
-7. README final (setup, download, train, run, controls, demo GIF placeholder)
+7. README final (setup, download, train, run, controls, demo GIF `docs/demo.gif`)
 
 ## 10. Coding rules
 - All comments, docstrings, logs and terminal output in English.

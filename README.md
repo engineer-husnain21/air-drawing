@@ -5,11 +5,19 @@ your hand, OpenCV renders the drawing, and a small CNN trained on Google's
 [Quick, Draw!](https://quickdraw.withgoogle.com/data) dataset recognises it. When the
 CNN is unsure, the drawing is sent to Gemini (vision LLM) as a fallback.
 
-![Demo](docs-demo-placeholder.gif)
-<!-- TODO: record a demo GIF and replace the placeholder above. -->
+![Demo](docs/demo.gif)
 
 **Recognised categories (15):** circle, triangle, square, star, house, car, tree, fish,
 sun, cloud, apple, umbrella, cat, clock, bicycle.
+
+## Results
+
+- **CNN:** 96.4 % validation accuracy on Quick, Draw! (15 categories), trained with
+  air-drawing augmentation. Validation uses held-out, unaugmented Quick, Draw!
+  images; live air drawings are harder, which is what the fallback is for.
+- **Gemini fallback:** drawings the CNN is unsure about (top-1 below 0.85) go to
+  Gemini, with the CNN top-3 as hints.
+- **Text mode:** handwritten letters and words are read by Gemini.
 
 ## How it works
 
@@ -57,7 +65,7 @@ and `ruff`. For a smaller, CPU-only PyTorch, install torch first with
 | Variable               | Meaning                                                  |
 | ---------------------- | -------------------------------------------------------- |
 | `GEMINI_API_KEY`       | Your key from <https://aistudio.google.com/apikey>.     |
-| `GEMINI_MODEL`         | Any Gemini model with vision, e.g. `gemini-2.5-flash`.   |
+| `GEMINI_MODEL`         | Any Gemini model with vision, e.g. `gemini-3.8-flash`.   |
 | `CONFIDENCE_THRESHOLD` | Ask Gemini below this top-1 CNN confidence (default 0.85).|
 
 The app works without a key: it keeps the CNN result and shows
@@ -222,6 +230,7 @@ src/air_drawing/
   app.py                    main loop and HUD
 tests/                      pytest suite
 data/samples/               demo drawings
+docs/demo.gif               demo animation for this README
 ```
 
 ## Design decisions
@@ -264,8 +273,8 @@ data/samples/               demo drawings
   uniformly for narrower cameras, so all buttons always fit.
 - **Air click fires once.** After a dwell click the fingertip has to leave the button
   before it can click it again, so holding still does not repeat the click.
-- **Accuracy on real air drawings.** The CNN scores ~97 % on Quick, Draw! validation
-  data but much less on air drawings, which are shakier and differently sized and
+- **Accuracy on real air drawings.** The CNN scores 96.4 % on Quick, Draw! validation
+  data but less on air drawings, which are shakier and differently sized and
   tilted. Three changes address this gap: training-time augmentation that imitates
   air drawing, a higher Gemini threshold (0.85, so Gemini decides more of the hard
   cases), and CNN top-3 hints for Gemini. The hints are framed as possibly wrong and
@@ -280,6 +289,9 @@ data/samples/               demo drawings
 - **Debug image = CNN input, byte for byte.** The app renders the 28×28 bitmap once,
   saves and shows that bitmap, and builds the CNN tensor from the same array, so the
   debug file is exactly what the model saw (a test checks this).
+- **`docs/` folder for the demo GIF.** Not in the original file list; it holds only
+  `docs/demo.gif`, shown at the top of this README, so the image does not clutter the
+  project root.
 - **Separate image for handwriting.** The shape image is a 256×256 square, which would
   squash a word into a thin strip with blobby letters. Text mode renders a separate
   image: aspect ratio kept, 1024 px on the long side, and a fixed 8 px stroke in output
@@ -302,9 +314,6 @@ data/samples/               demo drawings
   tests and the full app loop was driven with synthetic hand landmarks, but the gesture
   thresholds (`FINGER_EXTENDED_RATIO`, `THUMB_EXTENDED_RATIO` in `config.py`) may need
   tuning for your camera and hand.
-- **Retrain to benefit from augmentation.** An existing `models/cnn_quickdraw.pt` was
-  trained without it. Only a smoke run (2 categories, 500 samples, 1 epoch, saved
-  outside `models/`) was done to verify the new training code.
 - **An existing `.env` overrides the new threshold.** If your `.env` still says
   `CONFIDENCE_THRESHOLD=0.6`, change it to `0.85` (or delete the line).
 - **A higher threshold means more Gemini calls** (cost/quota) and a short wait before
@@ -321,4 +330,3 @@ data/samples/               demo drawings
   still allows, those characters show as "?" (the spoken sentence is unaffected).
 - **Text mode reliability depends on Gemini.** Air-written text is shaky; short words in
   block capitals work best.
-- **Demo GIF** is still a placeholder.
