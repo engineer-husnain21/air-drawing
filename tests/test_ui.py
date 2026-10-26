@@ -17,6 +17,7 @@ from air_drawing.ui import (
     DwellClicker,
     Toolbar,
     ToolbarState,
+    draw_debug_view,
     draw_mode_badges,
     draw_prediction_card,
     draw_progress_ring,
@@ -224,3 +225,32 @@ def test_long_text_card_stays_inside_frame() -> None:
     img = frame(640, 480)
     draw_prediction_card(img, CardContent(title="w" * 200, source="Gemini"), top=100)
     assert img[:, -1].sum() == 0  # nothing drawn on the right edge
+
+
+# --- Debug view and clear ring ------------------------------------------------------
+
+
+def test_debug_view_shows_exact_pixels_scaled_up() -> None:
+    img = frame()
+    bitmap = np.zeros((config.IMAGE_SIZE, config.IMAGE_SIZE), dtype=np.uint8)
+    bitmap[3, 5] = 255
+    draw_debug_view(img, bitmap)
+    s = config.DEBUG_VIEW_SCALE
+    size = config.IMAGE_SIZE * s
+    x = img.shape[1] - config.DEBUG_VIEW_MARGIN - size
+    y = img.shape[0] - config.DEBUG_VIEW_MARGIN - size - config.DEBUG_VIEW_LABEL_HEIGHT
+    block = img[y + 3 * s : y + 4 * s, x + 5 * s : x + 6 * s]
+    assert (block == 255).all()  # one CNN pixel = an s x s block (nearest neighbour)
+    assert (img[y + s, x + s] == 0).all()
+
+
+def test_debug_view_skips_tiny_frames() -> None:
+    img = frame(100, 100)
+    draw_debug_view(img, np.full((config.IMAGE_SIZE, config.IMAGE_SIZE), 255, np.uint8))
+    assert not img.any()
+
+
+def test_progress_ring_custom_color() -> None:
+    img = frame()
+    draw_progress_ring(img, (300, 300), 1.0, color=config.CLEAR_RING_COLOR, radius=40)
+    assert (img == np.array(config.CLEAR_RING_COLOR, np.uint8)).all(axis=2).any()

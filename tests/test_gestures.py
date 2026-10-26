@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 
 from air_drawing import config
-from air_drawing.gestures import Gesture, GestureDebouncer, classify_gesture, fingers_up
+from air_drawing.gestures import (
+    Gesture,
+    GestureDebouncer,
+    HoldTimer,
+    classify_gesture,
+    fingers_up,
+)
 
 WRIST_XY = (100.0, 300.0)
 FINGER_X = {"index": 100.0, "middle": 120.0, "ring": 140.0, "pinky": 160.0}
@@ -107,3 +113,50 @@ def test_debouncer_reset() -> None:
 def test_debouncer_rejects_invalid_frames() -> None:
     with pytest.raises(ValueError):
         GestureDebouncer(frames=0)
+
+
+# --- Clear hold timer -----------------------------------------------------------------
+
+
+def test_hold_timer_fires_after_hold_time() -> None:
+    timer = HoldTimer(seconds=1.0)
+    assert not timer.update(True, now=0.0)
+    assert not timer.update(True, now=0.5)
+    assert timer.progress == pytest.approx(0.5)
+    assert not timer.update(True, now=0.9)
+    assert timer.update(True, now=1.0)
+
+
+def test_hold_timer_fires_once_per_hold() -> None:
+    timer = HoldTimer(seconds=1.0)
+    timer.update(True, now=0.0)
+    assert timer.update(True, now=1.0)
+    assert not timer.update(True, now=3.0)
+    assert timer.progress == 0.0
+    timer.update(False, now=3.1)
+    timer.update(True, now=3.2)
+    assert timer.update(True, now=4.25)
+
+
+def test_hold_timer_release_resets() -> None:
+    timer = HoldTimer(seconds=1.0)
+    timer.update(True, now=0.0)
+    timer.update(True, now=0.8)
+    timer.update(False, now=0.85)
+    assert timer.progress == 0.0
+    timer.update(True, now=0.9)
+    assert not timer.update(True, now=1.5)  # restarted at 0.9
+    assert timer.update(True, now=1.95)
+
+
+def test_hold_timer_uses_injected_clock_and_config_default() -> None:
+    now = [5.0]
+    timer = HoldTimer(clock=lambda: now[0])
+    timer.update(True)
+    now[0] += config.CLEAR_HOLD_SECONDS
+    assert timer.update(True)
+
+
+def test_hold_timer_rejects_invalid_seconds() -> None:
+    with pytest.raises(ValueError):
+        HoldTimer(seconds=0)

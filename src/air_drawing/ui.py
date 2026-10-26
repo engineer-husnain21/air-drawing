@@ -320,11 +320,17 @@ def draw_toolbar(frame: np.ndarray, toolbar: Toolbar, state: ToolbarState) -> No
         )
 
 
-def draw_progress_ring(frame: np.ndarray, center: tuple[int, int], progress: float) -> None:
+def draw_progress_ring(
+    frame: np.ndarray,
+    center: tuple[int, int],
+    progress: float,
+    color: Color = config.PROGRESS_RING_COLOR,
+    radius: int = config.PROGRESS_RING_RADIUS,
+) -> None:
     """Draw a circular progress ring (0..1) around a point."""
     if progress <= 0:
         return
-    r = config.PROGRESS_RING_RADIUS
+    r = radius
     cv2.circle(
         frame,
         center,
@@ -341,7 +347,7 @@ def draw_progress_ring(frame: np.ndarray, center: tuple[int, int], progress: flo
         0,
         config.RING_START_DEG,
         end,
-        config.PROGRESS_RING_COLOR,
+        color,
         config.PROGRESS_RING_THICKNESS,
         cv2.LINE_AA,
     )
@@ -502,3 +508,33 @@ def draw_mode_badges(
         left = draw_badge(frame, text, rec_color, left - config.TOOLBAR_GAP, top)
     if muted:
         draw_badge(frame, MUTED_BADGE, config.MUTED_BADGE_COLOR, left - config.TOOLBAR_GAP, top)
+
+
+def draw_debug_view(frame: np.ndarray, bitmap: np.ndarray) -> None:
+    """Show the 28x28 CNN input, scaled up with sharp pixels, in the bottom-right corner."""
+    size = bitmap.shape[0] * config.DEBUG_VIEW_SCALE
+    margin, label_h = config.DEBUG_VIEW_MARGIN, config.DEBUG_VIEW_LABEL_HEIGHT
+    x = frame.shape[1] - margin - size
+    y = frame.shape[0] - margin - size - label_h  # leave room for the controls hint
+    if x < 0 or y < label_h:
+        return  # frame too small to show it
+    big = cv2.resize(bitmap, (size, size), interpolation=cv2.INTER_NEAREST)
+    frame[y : y + size, x : x + size] = cv2.cvtColor(big, cv2.COLOR_GRAY2BGR)
+    border = config.DEBUG_VIEW_BORDER
+    cv2.rectangle(
+        frame,
+        (x - border, y - border),
+        (x + size + border - 1, y + size + border - 1),
+        config.DEBUG_VIEW_BORDER_COLOR,
+        border,
+    )
+    cv2.putText(
+        frame,
+        config.DEBUG_VIEW_LABEL,
+        (x, y - border * 2),
+        FONT,
+        config.CARD_TEXT_SCALE,
+        config.DEBUG_VIEW_BORDER_COLOR,
+        config.HUD_THICKNESS,
+        cv2.LINE_AA,
+    )

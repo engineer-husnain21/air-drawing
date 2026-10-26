@@ -5,6 +5,9 @@ Pipeline: bounding box -> square with padding (aspect ratio kept) -> centre ->
 thick strokes at high resolution -> resize to 28x28 -> scale to [0, 1].
 """
 
+from datetime import datetime
+from pathlib import Path
+
 import cv2
 import numpy as np
 import torch
@@ -97,3 +100,21 @@ def render_text_for_llm(
     image = np.full((height, width), int(config.PIXEL_MAX), dtype=np.uint8)
     draw_strokes(image, scaled, color=0, thickness=thickness)
     return image
+
+
+def save_debug_bitmap(
+    bitmap: np.ndarray, directory: Path = config.DEBUG_DIR, now: datetime | None = None
+) -> Path:
+    """Save the exact 28x28 CNN input as data/samples/debug_<time>.png; return the path.
+
+    Encoded in memory and written with pathlib, which also works for non-ASCII paths
+    on Windows (cv2.imwrite does not).
+    """
+    stamp = (now or datetime.now()).strftime(config.DEBUG_TIME_FORMAT)
+    path = directory / f"{config.DEBUG_FILE_PREFIX}{stamp}.png"
+    ok, buffer = cv2.imencode(".png", bitmap)
+    if not ok:
+        raise ValueError("Could not encode debug image as PNG")
+    directory.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(buffer.tobytes())
+    return path

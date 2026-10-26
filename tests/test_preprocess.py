@@ -1,7 +1,10 @@
 """Tests for converting strokes into Quick, Draw!-format tensors."""
 
 import math
+from datetime import datetime
+from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 import torch
@@ -12,6 +15,7 @@ from air_drawing.preprocess import (
     preprocess_strokes,
     render_for_llm,
     render_text_for_llm,
+    save_debug_bitmap,
     strokes_to_bitmap,
 )
 
@@ -126,3 +130,26 @@ def test_text_stroke_width_is_fixed_in_output_pixels(scale: float) -> None:
 def test_text_image_empty_is_none() -> None:
     assert render_text_for_llm([]) is None
     assert render_text_for_llm([[]]) is None
+
+
+def test_save_debug_bitmap_writes_exact_png(tmp_path: Path) -> None:
+    bitmap = strokes_to_bitmap([circle(100, 100, 40)])
+    assert bitmap is not None
+    target = tmp_path / "nested" / "samples"
+    path = save_debug_bitmap(bitmap, target, now=datetime(2026, 10, 26, 14, 5, 9, 123456))
+    assert path == target / "debug_20261026-140509-123456.png"
+    saved = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert saved.shape == (config.IMAGE_SIZE, config.IMAGE_SIZE)
+    assert np.array_equal(saved, bitmap)  # lossless: exactly what the CNN saw
+
+
+def test_save_debug_bitmap_names_are_unique(tmp_path: Path) -> None:
+    bitmap = np.zeros((config.IMAGE_SIZE, config.IMAGE_SIZE), dtype=np.uint8)
+    paths = {save_debug_bitmap(bitmap, tmp_path) for _ in range(5)}
+    assert all(p.name.startswith(config.DEBUG_FILE_PREFIX) for p in paths)
+    assert len(list(tmp_path.glob("debug_*.png"))) == len(paths)
+
+
+def test_debug_images_are_gitignored() -> None:
+    gitignore = (config.PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "data/samples/debug_*" in gitignore.splitlines()

@@ -1,5 +1,7 @@
 """Gesture recognition from hand landmarks: draw, pen up, clear, predict."""
 
+import time
+from collections.abc import Callable
 from enum import Enum
 
 import numpy as np
@@ -97,3 +99,47 @@ class GestureDebouncer:
         self._count = 0
         self.stable = Gesture.NONE
         self.changed = False
+
+
+class HoldTimer:
+    """Fires once after a condition has stayed true for `seconds`.
+
+    Used for the open-hand CLEAR gesture so a brief open hand while drawing does
+    not wipe the canvas. The condition must become false before it can fire again.
+    """
+
+    def __init__(
+        self,
+        seconds: float = config.CLEAR_HOLD_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Create a timer; `clock` is injectable for tests."""
+        if seconds <= 0:
+            raise ValueError("seconds must be > 0")
+        self._seconds = seconds
+        self._clock = clock
+        self._start: float | None = None
+        self._fired = False
+        self.progress = 0.0
+
+    def update(self, active: bool, now: float | None = None) -> bool:
+        """Report whether the condition holds this frame; return True when it fires."""
+        now = self._clock() if now is None else now
+        if not active:
+            self.reset()
+            return False
+        if self._start is None:
+            self._start = now
+        if self._fired:
+            self.progress = 0.0
+            return False
+        self.progress = min((now - self._start) / self._seconds, 1.0)
+        if self.progress >= 1.0:
+            self._fired = True
+            self.progress = 0.0
+            return True
+        return False
+
+    def reset(self) -> None:
+        """Cancel the hold."""
+        self._start, self._fired, self.progress = None, False, 0.0
