@@ -20,3 +20,6 @@ models/*.pt
 Thumbs.db
 .vscode/
 .idea/
+
+# Debug images saved by the app (key "d")
+data/samples/debug_*

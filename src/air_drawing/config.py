@@ -63,6 +63,7 @@ KEY_QUIT: str = "q"
 KEY_MUTE: str = "m"
 KEY_UNDO: str = "u"
 KEY_TEXT_MODE: str = "t"
+KEY_DEBUG: str = "d"
 
 # --- Hand tracking -----------------------------------------------------------
 NUM_HANDS: int = 1
@@ -84,6 +85,8 @@ RING_TIP: int = 16
 PINKY_MCP: int = 17
 PINKY_PIP: int = 18
 PINKY_TIP: int = 20
+MIDDLE_MCP: int = 9
+PALM_LANDMARK: int = MIDDLE_MCP  # centre of the clear-hold progress ring
 PEN_LANDMARK: int = INDEX_TIP
 
 HAND_CONNECTIONS: tuple[tuple[int, int], ...] = (
@@ -123,17 +126,29 @@ POOL_SIZE: int = 2
 HIDDEN_UNITS: int = 256
 DROPOUT: float = 0.3
 TOP_K: int = 3
+HINT_DECIMALS: int = 0  # CNN hint percentages sent to Gemini
 
 # --- Training ----------------------------------------------------------------
 DEFAULT_SAMPLES_PER_CLASS: int = 15000
-DEFAULT_EPOCHS: int = 8
+DEFAULT_EPOCHS: int = 12
+
+# --- Training augmentation (mimics air drawing; applied per batch on CPU) ----
+AUG_ROTATION_DEG: float = 15.0  # random rotation in [-15, +15] degrees
+AUG_SCALE_RANGE: tuple[float, float] = (0.8, 1.1)  # drawing size factor
+AUG_SHIFT: float = 0.1  # max shift as a fraction of half the image (~1.4 px)
+AUG_ELASTIC_GRID: int = 4  # coarse noise grid upsampled to a smooth displacement field
+AUG_ELASTIC_STRENGTH: float = 0.04  # max displacement as a fraction of half the image
+AUG_THICKNESS_PROB: float = 0.5  # chance to thicken or thin the strokes
+AUG_THICKEN_SHARE: float = 0.5  # of those, the share that is thickened (rest thinned)
+AUG_THICKNESS_MAX_BLEND: float = 0.7  # 1.0 = full 3x3 dilation / erosion
+AUG_MORPH_KERNEL: int = 3
 TRAIN_SPLIT: float = 0.8
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 1e-3
 RANDOM_SEED: int = 42
 
 # --- LLM fallback ------------------------------------------------------------
-DEFAULT_CONFIDENCE_THRESHOLD: float = 0.6
+DEFAULT_CONFIDENCE_THRESHOLD: float = 0.85
 GEMINI_API_KEY_ENV: str = "GEMINI_API_KEY"
 GEMINI_MODEL_ENV: str = "GEMINI_MODEL"
 CONFIDENCE_THRESHOLD_ENV: str = "CONFIDENCE_THRESHOLD"
@@ -268,6 +283,22 @@ TEXT_IMAGE_PADDING: int = 48
 TEXT_STROKE_THICKNESS: int = 8
 CARD_MAX_TITLE_CHARS: int = 40  # longer recognised text is shortened with "..."
 CARD_MIN_TITLE_SCALE: float = 0.6
+
+# --- Clear gesture hold ------------------------------------------------------
+CLEAR_HOLD_SECONDS: float = 1.0  # open hand must be held this long before clearing
+CLEAR_RING_COLOR: tuple[int, int, int] = (60, 60, 255)  # BGR, red ring around the palm
+CLEAR_RING_RADIUS: int = 40
+
+# --- Debug view --------------------------------------------------------------
+DEBUG_VIEW_SCALE: int = 6  # 28 px -> 168 px, nearest-neighbour so pixels stay sharp
+DEBUG_VIEW_MARGIN: int = 20
+DEBUG_VIEW_LABEL_HEIGHT: int = 26
+DEBUG_VIEW_BORDER: int = 2
+DEBUG_VIEW_BORDER_COLOR: tuple[int, int, int] = (0, 230, 255)
+DEBUG_VIEW_LABEL: str = "CNN input 28x28"
+DEBUG_DIR: Path = SAMPLES_DIR
+DEBUG_FILE_PREFIX: str = "debug_"
+DEBUG_TIME_FORMAT: str = "%Y%m%d-%H%M%S-%f"  # microseconds avoid name clashes
 
 
 def get_confidence_threshold() -> float:
